@@ -20,6 +20,11 @@ namespace Microsoft.Xna.Framework.Audio
     internal class OggStream : IDisposable
     {
         const int DefaultBufferCount = 3;
+        [System.Diagnostics.Conditional("DEBUG")]
+        private static void Log(string message)
+        {
+            System.Console.WriteLine("OggTrace: " + message);
+        }
 
         internal readonly object stopMutex = new object();
         internal readonly object prepareMutex = new object();
@@ -41,10 +46,12 @@ namespace Microsoft.Xna.Framework.Audio
             oggFileName = filename;
             FinishedAction = finishedAction;
             BufferCount = bufferCount;
+            Log("ctor: file=" + filename + " bufferCount=" + bufferCount);
 
             alBufferIds = AL.GenBuffers(bufferCount);
             ALHelper.CheckError("Failed to generate buffers.");
             alSourceId = OpenALSoundController.Instance.ReserveSource();
+            Log("ctor: source=" + alSourceId);
 
             if (OggStreamer.Instance.XRam.IsInitialized)
             {
@@ -58,6 +65,7 @@ namespace Microsoft.Xna.Framework.Audio
         public void Prepare()
         {
             if (Preparing) return;
+            Log("Prepare: start source=" + alSourceId);
 
             var state = AL.GetSourceState(alSourceId);
             ALHelper.CheckError("Failed to get source state.");
@@ -85,6 +93,7 @@ namespace Microsoft.Xna.Framework.Audio
                     {
                         Preparing = true;
                         Open(precache: true);
+                        Log("Prepare: Open complete ready=" + Ready);
                     }
                 }
             }
@@ -92,6 +101,7 @@ namespace Microsoft.Xna.Framework.Audio
 
         public void Play()
         {
+            Log("Play: start source=" + alSourceId);
             var state = AL.GetSourceState(alSourceId);
             ALHelper.CheckError("Failed to get source state.");
 
@@ -107,6 +117,7 @@ namespace Microsoft.Xna.Framework.Audio
 
             AL.SourcePlay(alSourceId);
             ALHelper.CheckError("Failed to play source.");
+            Log("Play: SourcePlay complete");
 
             Preparing = false;
 
@@ -179,6 +190,9 @@ namespace Microsoft.Xna.Framework.Audio
         }
 
         float volume;
+        float pitch;
+        float pan;
+
         public float Volume
         {
             get { return volume; }
@@ -186,6 +200,48 @@ namespace Microsoft.Xna.Framework.Audio
             {
                 AL.Source(alSourceId, ALSourcef.Gain, volume = value);
                 ALHelper.CheckError("Failed to set volume.");
+            }
+        }
+
+        public float Pitch
+        {
+            get { return pitch; }
+            set
+            {
+                pitch = value;
+                AL.Source(alSourceId, ALSourcef.Pitch, (float)Math.Pow(2, value));
+                ALHelper.CheckError("Failed to set pitch.");
+            }
+        }
+
+        public float Pan
+        {
+            get { return pan; }
+            set
+            {
+                pan = value;
+                AL.Source(alSourceId, ALSourcei.SourceRelative, 1);
+                ALHelper.CheckError("Failed set source relative.");
+                AL.Source(alSourceId, ALSource3f.Position, value, 0.0f, 0.1f);
+                ALHelper.CheckError("Failed to set pan.");
+            }
+        }
+
+        public SoundState State
+        {
+            get
+            {
+                var state = AL.GetSourceState(alSourceId);
+                ALHelper.CheckError("Failed to get source state.");
+                switch (state)
+                {
+                    case ALSourceState.Playing:
+                        return SoundState.Playing;
+                    case ALSourceState.Paused:
+                        return SoundState.Paused;
+                    default:
+                        return SoundState.Stopped;
+                }
             }
         }
 
@@ -257,6 +313,7 @@ namespace Microsoft.Xna.Framework.Audio
 
         internal void Open(bool precache = false)
         {
+            Log("Open: file=" + oggFileName + " precache=" + precache);
             Reader = new VorbisReader(oggFileName);
 
             if (precache)

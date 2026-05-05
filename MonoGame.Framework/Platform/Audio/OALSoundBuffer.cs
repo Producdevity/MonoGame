@@ -7,12 +7,33 @@ using MonoGame.OpenAL;
 
 namespace Microsoft.Xna.Framework.Audio
 {
-	internal class OALSoundBuffer : IDisposable
-	{
-		int openALDataBuffer;
-		ALFormat openALFormat;
-		int dataSize;
-        bool _isDisposed;
+    internal class OALSoundBufferStreamed
+    {
+        public IntPtr DataBuffer { get; private set; }
+        public ALFormat Format { get; private set; }
+        public int Size { get; private set; }
+        public int SampleRate { get; private set; }
+        public AudioChannels Channels { get; private set; }
+        public int Alignment { get; private set; }
+
+        public OALSoundBufferStreamed(IntPtr dataBuffer, ALFormat format, int size, int sampleRate, AudioChannels channels, int alignment)
+        {
+            DataBuffer = dataBuffer;
+            Format = format;
+            Size = size;
+            SampleRate = sampleRate;
+            Channels = channels;
+            Alignment = alignment;
+        }
+    }
+
+		internal class OALSoundBuffer : IDisposable
+		{
+			int openALDataBuffer;
+			ALFormat openALFormat;
+			int dataSize;
+	        int sampleRate;
+	        bool _isDisposed;
 
 		public OALSoundBuffer()
 		{
@@ -25,13 +46,25 @@ namespace Microsoft.Xna.Framework.Audio
             Dispose(false);
         }
 
-		public int OpenALDataBuffer
-        {
-			get
-            {
-				return openALDataBuffer;
+			public int OpenALDataBuffer
+	        {
+				get { return openALDataBuffer; }
 			}
-		}
+
+	        public ALFormat Format
+	        {
+	            get { return openALFormat; }
+	        }
+
+	        public int DataSize
+	        {
+	            get { return dataSize; }
+	        }
+
+	        public int SampleRate
+	        {
+	            get { return sampleRate; }
+	        }
 
 		public double Duration
         {
@@ -46,9 +79,42 @@ namespace Microsoft.Xna.Framework.Audio
             if ((format == ALFormat.MonoIma4 || format == ALFormat.StereoIma4) && !OpenALSoundController.Instance.SupportsIma4)
                 throw new InvalidOperationException("IMA/ADPCM is not supported by this OpenAL driver");
 
-            openALFormat = format;
-            dataSize = size;
-            int unpackedSize = 0;
+	            openALFormat = format;
+	            dataSize = size;
+	            this.sampleRate = sampleRate;
+	            int unpackedSize = 0;
+
+            if (sampleAlignment > 0)
+            {
+                AL.Bufferi(openALDataBuffer, ALBufferi.UnpackBlockAlignmentSoft, sampleAlignment);
+                ALHelper.CheckError("Failed to fill buffer.");
+            }
+
+            AL.BufferData(openALDataBuffer, openALFormat, dataBuffer, size, sampleRate);
+            ALHelper.CheckError("Failed to fill buffer.");
+
+            int bits, channels;
+            Duration = -1;
+            AL.GetBuffer(openALDataBuffer, ALGetBufferi.Bits, out bits);
+            ALHelper.CheckError("Failed to get buffer bits");
+            AL.GetBuffer(openALDataBuffer, ALGetBufferi.Channels, out channels);
+            ALHelper.CheckError("Failed to get buffer channels");
+            AL.GetBuffer(openALDataBuffer, ALGetBufferi.Size, out unpackedSize);
+            ALHelper.CheckError("Failed to get buffer size");
+            Duration = (float)(unpackedSize / ((bits / 8) * channels)) / (float)sampleRate;
+        }
+
+        public void BindDataBuffer(IntPtr dataBuffer, ALFormat format, int size, int sampleRate, int sampleAlignment = 0)
+        {
+            if ((format == ALFormat.MonoMSAdpcm || format == ALFormat.StereoMSAdpcm) && !OpenALSoundController.Instance.SupportsAdpcm)
+                throw new InvalidOperationException("MS-ADPCM is not supported by this OpenAL driver");
+            if ((format == ALFormat.MonoIma4 || format == ALFormat.StereoIma4) && !OpenALSoundController.Instance.SupportsIma4)
+                throw new InvalidOperationException("IMA/ADPCM is not supported by this OpenAL driver");
+
+	            openALFormat = format;
+	            dataSize = size;
+	            this.sampleRate = sampleRate;
+	            int unpackedSize = 0;
 
             if (sampleAlignment > 0)
             {

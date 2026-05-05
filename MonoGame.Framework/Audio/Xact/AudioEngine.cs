@@ -14,6 +14,12 @@ namespace Microsoft.Xna.Framework.Audio
     /// </summary> 
     public class AudioEngine : IDisposable
     {
+        [System.Diagnostics.Conditional("DEBUG")]
+        private static void Log(string message)
+        {
+            System.Console.WriteLine("XactTrace: " + message);
+        }
+
         private readonly AudioCategory[] _categories;
         private readonly Dictionary<string, int> _categoryLookup = new Dictionary<string, int>();
 
@@ -58,7 +64,41 @@ namespace Microsoft.Xna.Framework.Audio
 
         internal static Stream OpenStream(string filePath, bool useMemoryStream = false)
         {
-            var stream = TitleContainer.OpenStream(filePath);
+            Log(
+                "OpenStream request path=" + filePath
+                + " cwd=" + Environment.CurrentDirectory
+                + " baseDir=" + AppDomain.CurrentDomain.BaseDirectory
+                + " titleLocation=" + TitleContainer.Location);
+
+            Stream stream;
+            try
+            {
+                stream = TitleContainer.OpenStream(filePath);
+            }
+            catch (Exception ex)
+            {
+                Log(
+                    "OpenStream failed path=" + filePath
+                    + " type=" + ex.GetType().FullName
+                    + " message=" + ex.Message);
+                throw;
+            }
+
+            long streamLength = -1;
+            try
+            {
+                if (stream.CanSeek)
+                    streamLength = stream.Length;
+            }
+            catch
+            {
+            }
+
+            Log(
+                "OpenStream opened path=" + filePath
+                + " type=" + stream.GetType().FullName
+                + " canSeek=" + stream.CanSeek
+                + " length=" + streamLength);
 
             // Read the asset into memory in one go. This results in a ~50% reduction
             // in load times on Android due to slow Android asset streams.
@@ -73,6 +113,7 @@ namespace Microsoft.Xna.Framework.Audio
                 memStream.Seek(0, SeekOrigin.Begin);
                 stream.Dispose();
                 stream = memStream;
+                Log("OpenStream copied to memory path=" + filePath + " length=" + memStream.Length);
             }
 
             return stream;
@@ -86,6 +127,8 @@ namespace Microsoft.Xna.Framework.Audio
         {
             if (string.IsNullOrEmpty(settingsFile))
                 throw new ArgumentNullException("settingsFile");
+
+            Log("AudioEngine ctor settingsFile=" + settingsFile);
 
             // Read the xact settings file
             // Credits to alisci01 for initial format documentation
@@ -233,6 +276,11 @@ namespace Microsoft.Xna.Framework.Audio
 
             _stopwatch = new Stopwatch();
             _stopwatch.Start();
+            Log(
+                "AudioEngine ready"
+                + " categories=" + _categories.Length
+                + " globals=" + _variables.Length
+                + " cueVars=" + _cueVariables.Length);
         }
 
         internal int GetRpcIndex(uint fileOffset)
@@ -311,7 +359,7 @@ namespace Microsoft.Xna.Framework.Audio
         /// <summary>Returns an audio category by name.</summary>
         /// <param name="name">Friendly name of the category to get.</param>
         /// <returns>The AudioCategory with a matching name. Throws an exception if not found.</returns>
-        public AudioCategory GetCategory(string name)
+        public int GetCategoryIndex(string name)
         {
             if (string.IsNullOrEmpty(name))
                 throw new ArgumentNullException("name");
@@ -320,7 +368,20 @@ namespace Microsoft.Xna.Framework.Audio
             if (!_categoryLookup.TryGetValue(name, out i))
                 throw new InvalidOperationException("This resource could not be created.");
 
-            return _categories[i];
+            return i;
+        }
+
+        public ReverbSettings GetReverbSettings()
+        {
+            return _reverbSettings;
+        }
+
+        /// <summary>Returns an audio category by name.</summary>
+        /// <param name="name">Friendly name of the category to get.</param>
+        /// <returns>The AudioCategory with a matching name. Throws an exception if not found.</returns>
+        public AudioCategory GetCategory(string name)
+        {
+            return _categories[GetCategoryIndex(name)];
         }
 
         /// <summary>Gets the value of a global variable.</summary>
@@ -401,4 +462,3 @@ namespace Microsoft.Xna.Framework.Audio
         }
     }
 }
-

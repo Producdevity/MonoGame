@@ -14,14 +14,30 @@ namespace Microsoft.Xna.Framework.Audio
     /// </remarks>
     public class Cue : IDisposable
     {
+        [System.Diagnostics.Conditional("DEBUG")]
+        private static void Log(string message)
+        {
+            System.Console.WriteLine("XactTrace: " + message);
+        }
+
         private readonly AudioEngine _engine;
         private readonly string _name;
-        private readonly XactSound[] _sounds;
+        private XactSound[] _sounds;
         private readonly float[] _probs;
+        private readonly CueDefinition _cueDefinition;
 
         private readonly RpcVariable[] _variables;
 
         private XactSound _curSound;
+
+        private float _cueVolume = 1.0f;
+        private float _cuePitch;
+        private float _rpcVolume = 1.0f;
+        private float _rpcPitch;
+        private float _rpcReverbMix = 1.0f;
+        private float? _rpcFilterFrequency;
+        private float? _rpcFilterQFactor;
+        private bool? _pitchControlledByRPC;
 
         private bool _applied3D;
         private bool _played;
@@ -30,7 +46,7 @@ namespace Microsoft.Xna.Framework.Audio
         /// <remarks>IsPlaying and IsPaused both return true if a cue is paused while playing.</remarks>
         public bool IsPaused
         {
-            get 
+            get
             {
                 if (_curSound != null)
                     return _curSound.IsPaused;
@@ -43,7 +59,7 @@ namespace Microsoft.Xna.Framework.Audio
         /// <remarks>IsPlaying and IsPaused both return true if a cue is paused while playing.</remarks>
         public bool IsPlaying
         {
-            get 
+            get
             {
                 if (_curSound != null)
                     return _curSound.Playing;
@@ -55,7 +71,7 @@ namespace Microsoft.Xna.Framework.Audio
         /// <summary>Indicates whether or not the cue is currently stopped.</summary>
         public bool IsStopped
         {
-            get 
+            get
             {
                 if (_curSound != null)
                     return _curSound.Stopped;
@@ -73,7 +89,7 @@ namespace Microsoft.Xna.Framework.Audio
             }
         }
 
-        public bool IsPreparing 
+        public bool IsPreparing
         {
             get { return false; }
         }
@@ -88,7 +104,64 @@ namespace Microsoft.Xna.Framework.Audio
         {
             get { return _name; }
         }
-        
+
+        public bool IsPitchBeingControlledByRPC
+        {
+            get
+            {
+                if (!_pitchControlledByRPC.HasValue)
+                {
+                    var sound = _curSound;
+                    if (sound == null && _sounds.Length > 0)
+                        sound = _sounds[0];
+
+                    var controlled = false;
+                    if (sound != null)
+                    {
+                        var rpcCurves = sound.RpcCurves;
+                        for (var i = 0; i < rpcCurves.Length; i++)
+                        {
+                            if (_engine.RpcCurves[rpcCurves[i]].Parameter == RpcParameter.Pitch)
+                            {
+                                controlled = true;
+                                break;
+                            }
+                        }
+                    }
+
+                    _pitchControlledByRPC = controlled;
+                }
+
+                return _pitchControlledByRPC.Value;
+            }
+        }
+
+        public float Pitch
+        {
+            get { return _cuePitch; }
+            set
+            {
+                if (_cuePitch == value)
+                    return;
+
+                _cuePitch = value;
+                UpdateCurrentSoundState();
+            }
+        }
+
+        public float Volume
+        {
+            get { return _cueVolume; }
+            set
+            {
+                if (_cueVolume == value)
+                    return;
+
+                _cueVolume = value;
+                UpdateCurrentSoundState();
+            }
+        }
+
         internal Cue(AudioEngine engine, string cuename, XactSound sound)
         {
             _engine = engine;
@@ -99,7 +172,7 @@ namespace Microsoft.Xna.Framework.Audio
             _probs[0] = 1.0f;
             _variables = engine.CreateCueVariables();
         }
-        
+
         internal Cue(AudioEngine engine, string cuename, XactSound[] sounds, float[] probs)
         {
             _engine = engine;
@@ -107,6 +180,37 @@ namespace Microsoft.Xna.Framework.Audio
             _sounds = sounds;
             _probs = probs;
             _variables = engine.CreateCueVariables();
+        }
+
+        internal Cue(AudioEngine engine, string cuename, CueDefinition cueDefinition, float[] probs)
+        {
+            _engine = engine;
+            _name = cuename;
+            _cueDefinition = cueDefinition;
+            _probs = probs;
+            _variables = engine.CreateCueVariables();
+            RefreshCueDefinitionSounds();
+            _cueDefinition.OnModified += OnCueDefinitionModified;
+        }
+
+        private void RefreshCueDefinitionSounds()
+        {
+            _sounds = _cueDefinition.sounds.ToArray();
+            _pitchControlledByRPC = null;
+        }
+
+        private void OnCueDefinitionModified()
+        {
+            lock (_engine.UpdateLock)
+            {
+                if (_curSound != null)
+                {
+                    _curSound.Stop(AudioStopOptions.Immediate);
+                    _curSound = null;
+                }
+
+                RefreshCueDefinitionSounds();
+            }
         }
 
         internal void Prepare()
@@ -136,11 +240,15 @@ namespace Microsoft.Xna.Framework.Audio
                 if (!_engine.ActiveCues.Contains(this))
                     _engine.ActiveCues.Add(this);
 
+                if (_sounds.Length == 0)
+                    throw new InvalidOperationException("The cue has no sounds.");
+
                 //TODO: Probabilities
                 var index = XactHelpers.Random.Next(_sounds.Length);
                 _curSound = _sounds[index];
 
                 var volume = UpdateRpcCurves();
+//                Log("Cue.Play name=" + _name + " index=" + index + " volume=" + volume);
 
                 _curSound.Play(volume, _engine);
             }
@@ -231,7 +339,7 @@ namespace Microsoft.Xna.Framework.Audio
         /// <para>This must be called before Play().</para>
         /// <para>Calling this method automatically converts the sound to monoaural and sets the speaker mix for any sound played by this cue to a value calculated with the listener's and emitter's positions. Any stereo information in the sound will be discarded.</para>
         /// </remarks>
-        public void Apply3D(AudioListener listener, AudioEmitter emitter) 
+        public void Apply3D(AudioListener listener, AudioEmitter emitter)
         {
             if (listener == null)
                 throw new ArgumentNullException("listener");
@@ -282,16 +390,15 @@ namespace Microsoft.Xna.Framework.Audio
         private float UpdateRpcCurves()
         {
             var volume = 1.0f;
+            var pitch = 0.0f;
+            var reverbMix = 1.0f;
+            float? filterFrequency = null;
+            float? filterQFactor = null;
 
             // Evaluate the runtime parameter controls.
             var rpcCurves = _curSound.RpcCurves;
             if (rpcCurves.Length > 0)
             {
-                var pitch = 0.0f;
-                var reverbMix = 1.0f;
-                float? filterFrequency = null;
-                float? filterQFactor = null;
-
                 for (var i = 0; i < rpcCurves.Length; i++)
                 {
                     var rpcCurve = _engine.RpcCurves[rpcCurves[i]];
@@ -334,13 +441,32 @@ namespace Microsoft.Xna.Framework.Audio
                 pitch = MathHelper.Clamp(pitch, -1.0f, 1.0f);
                 if (volume < 0.0f)
                     volume = 0.0f;
-
-                _curSound.UpdateState(_engine, volume, pitch, reverbMix, filterFrequency, filterQFactor);
             }
 
-            return volume;
+            _rpcVolume = volume;
+            _rpcPitch = pitch;
+            _rpcReverbMix = reverbMix;
+            _rpcFilterFrequency = filterFrequency;
+            _rpcFilterQFactor = filterQFactor;
+            UpdateCurrentSoundState();
+
+            return _cueVolume * _rpcVolume;
         }
-        
+
+        private void UpdateCurrentSoundState()
+        {
+            if (_curSound == null)
+                return;
+
+            _curSound.UpdateState(
+                _engine,
+                _cueVolume * _rpcVolume,
+                _cuePitch + _rpcPitch,
+                _rpcReverbMix,
+                _rpcFilterFrequency,
+                _rpcFilterQFactor);
+        }
+
         /// <summary>
         /// This event is triggered when the Cue is disposed.
         /// </summary>
@@ -368,11 +494,22 @@ namespace Microsoft.Xna.Framework.Audio
 
             if (disposing)
             {
+                lock (_engine.UpdateLock)
+                {
+                    _engine.ActiveCues.Remove(this);
+                    if (_curSound != null)
+                    {
+                        _curSound.Stop(AudioStopOptions.Immediate);
+                        _curSound = null;
+                    }
+                }
+
                 IsCreated = false;
                 IsPrepared = false;
+                if (_cueDefinition != null)
+                    _cueDefinition.OnModified -= OnCueDefinitionModified;
                 EventHelpers.Raise(this, Disposing, EventArgs.Empty);
             }
         }
     }
 }
-

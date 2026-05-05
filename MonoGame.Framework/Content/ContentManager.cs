@@ -222,40 +222,51 @@ namespace Microsoft.Xna.Framework.Content
 
 		public virtual T Load<T>(string assetName)
 		{
-            if (string.IsNullOrEmpty(assetName))
+            var diagnosticsSample = ContentLoadDiagnostics.BeginLoad(assetName, typeof(T), RootDirectory);
+            try
             {
-                throw new ArgumentNullException("assetName");
-            }
-            if (disposed)
-            {
-                throw new ObjectDisposedException("ContentManager");
-            }
-
-            T result = default(T);
-            
-            // On some platforms, name and slash direction matter.
-            // We store the asset by a /-seperating key rather than how the
-            // path to the file was passed to us to avoid
-            // loading "content/asset1.xnb" and "content\\ASSET1.xnb" as if they were two 
-            // different files. This matches stock XNA behavior.
-            // The dictionary will ignore case differences
-            var key = assetName.Replace('\\', '/');
-
-            // Check for a previously loaded asset first
-            object asset = null;
-            if (loadedAssets.TryGetValue(key, out asset))
-            {
-                if (asset is T)
+                if (string.IsNullOrEmpty(assetName))
                 {
-                    return (T)asset;
+                    throw new ArgumentNullException("assetName");
                 }
+                if (disposed)
+                {
+                    throw new ObjectDisposedException("ContentManager");
+                }
+
+                T result = default(T);
+
+                // On some platforms, name and slash direction matter.
+                // We store the asset by a /-seperating key rather than how the
+                // path to the file was passed to us to avoid
+                // loading "content/asset1.xnb" and "content\\ASSET1.xnb" as if they were two
+                // different files. This matches stock XNA behavior.
+                // The dictionary will ignore case differences
+                var key = assetName.Replace('\\', '/');
+
+                // Check for a previously loaded asset first
+                object asset = null;
+                if (loadedAssets.TryGetValue(key, out asset))
+                {
+                    if (asset is T)
+                    {
+                        ContentLoadDiagnostics.EndLoad(diagnosticsSample, true, null, true);
+                        return (T)asset;
+                    }
+                }
+
+                // Load the asset.
+                result = ReadAsset<T>(assetName, null);
+
+                loadedAssets[key] = result;
+                ContentLoadDiagnostics.EndLoad(diagnosticsSample, true, null, false);
+                return result;
             }
-
-            // Load the asset.
-            result = ReadAsset<T>(assetName, null);
-
-            loadedAssets[key] = result;
-            return result;
+            catch (Exception ex)
+            {
+                ContentLoadDiagnostics.EndLoad(diagnosticsSample, false, ex, false);
+                throw;
+            }
 		}
 		
 		protected virtual Stream OpenStream(string assetName)
@@ -264,6 +275,8 @@ namespace Microsoft.Xna.Framework.Content
 			try
             {
                 var assetPath = Path.Combine(RootDirectory, assetName) + ".xnb";
+                if (ContentLoadDiagnostics.TryOpenCachedStream(assetPath, out stream))
+                    return stream;
 
                 // This is primarily for editor support. 
                 // Setting the RootDirectory to an absolute path is useful in editor
@@ -274,6 +287,7 @@ namespace Microsoft.Xna.Framework.Content
                 else
 #endif                
                 stream = TitleContainer.OpenStream(assetPath);
+                ContentLoadDiagnostics.MarkStreamOpened(assetPath, assetPath, false);
 #if ANDROID
                 // Read the asset into memory in one go. This results in a ~50% reduction
                 // in load times on Android due to slow Android asset streams.
@@ -361,14 +375,16 @@ namespace Microsoft.Xna.Framework.Content
             int xnbLength = xnbReader.ReadInt32();
 
             Stream decompressedStream = null;
+            int decompressedSize = 0;
+            int compressedSize = 0;
             if (compressedLzx || compressedLz4)
             {
                 // Decompress the xnb
-                int decompressedSize = xnbReader.ReadInt32();
+                decompressedSize = xnbReader.ReadInt32();
 
                 if (compressedLzx)
                 {
-                    int compressedSize = xnbLength - 14;
+                    compressedSize = xnbLength - 14;
                     decompressedStream = new LzxDecoderStream(stream, decompressedSize, compressedSize);
                 }
                 else if (compressedLz4)
@@ -380,6 +396,8 @@ namespace Microsoft.Xna.Framework.Content
             {
                 decompressedStream = stream;
             }
+
+            ContentLoadDiagnostics.MarkXnb(flags, compressedLzx, compressedLz4, xnbLength, decompressedSize, compressedSize);
 
             var reader = new ContentReader(this, decompressedStream,
                                                         originalAssetName, version, recordDisposableObject);

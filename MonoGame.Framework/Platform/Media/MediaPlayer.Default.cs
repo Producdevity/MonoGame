@@ -13,6 +13,11 @@ namespace Microsoft.Xna.Framework.Media
 {
     public static partial class MediaPlayer
     {
+        [System.Diagnostics.Conditional("DEBUG")]
+        private static void Log(string message)
+        {
+            System.Console.WriteLine("MediaTrace: " + message);
+        }
 
         #region Properties
         
@@ -117,10 +122,17 @@ namespace Microsoft.Xna.Framework.Media
             if (_queue.ActiveSong == null)
                 return;
 
+            Log(
+                "PlatformPlaySong: song=" + (song == null ? "<null>" : song.Name)
+                + " startPosition=" + (startPosition.HasValue ? startPosition.Value.ToString() : "<null>")
+                + " muted=" + _isMuted
+                + " volume=" + _volume
+            );
             song.SetEventHandler(OnSongFinishedPlaying);
 
             song.Volume = _isMuted ? 0.0f : _volume;
             song.Play(startPosition);
+            Log("PlatformPlaySong: song.Play invoked");
         }
 
         private static void PlatformResume()
@@ -139,4 +151,3 @@ namespace Microsoft.Xna.Framework.Media
         }
     }
 }
-
