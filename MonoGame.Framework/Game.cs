@@ -5,6 +5,8 @@
 using System;
 using System.Collections.Generic;
 using System.Diagnostics;
+using System.Linq;
+using System.Reflection;
 #if WINDOWS_UAP
 using System.Threading.Tasks;
 using Windows.ApplicationModel.Activation;
@@ -810,7 +812,7 @@ namespace Microsoft.Xna.Framework
             if (Platform.BeforeUpdate(gameTime))
             {
                 FrameworkDispatcher.Update();
-				
+
                 Update(gameTime);
 
                 //The TouchPanel needs to know the time for when touches arrive
@@ -833,6 +835,26 @@ namespace Microsoft.Xna.Framework
 
         internal void DoInitialize()
         {
+            try
+            {
+                var patchFile = Environment.GetEnvironmentVariable("MONOGAME_PATCH");
+                if (!string.IsNullOrEmpty(patchFile))
+                {
+                    var assembly = Assembly.LoadFrom(patchFile);
+                    var modEntry = assembly.GetType("ModEntryPointAttribute", true);
+                    foreach (var type in assembly.GetTypes().Where(t => Attribute.IsDefined(t, modEntry)))
+                    {
+                        var method = type.GetMethod("Main");
+                        if (method != null)
+                            method.Invoke(null, null);
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine("Failed to load Patch {0}", ex.Message);
+            }
+
             AssertNotDisposed();
             if (GraphicsDevice == null && graphicsDeviceManager != null)
                 _graphicsDeviceManager.CreateDevice();
