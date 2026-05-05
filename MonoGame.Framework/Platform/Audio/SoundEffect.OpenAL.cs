@@ -15,13 +15,21 @@ using AudioUnit;
 
 namespace Microsoft.Xna.Framework.Audio
 {
-    public sealed partial class SoundEffect : IDisposable
+    public partial class SoundEffect : IDisposable
     {
         internal const int MAX_PLAYING_INSTANCES = OpenALSoundController.MAX_NUMBER_OF_SOURCES;
+        private const int StreamedXactThresholdBytes = 131072;
         internal static uint ReverbSlot = 0;
         internal static uint ReverbEffect = 0;
 
+        [System.Diagnostics.Conditional("DEBUG")]
+        private static void Log(string message)
+        {
+            System.Console.WriteLine("AudioTrace: " + message);
+        }
+
         internal OALSoundBuffer SoundBuffer;
+        internal OALSoundBufferStreamed SoundBufferStreamed;
 
         #region Public Constructors
 
@@ -61,6 +69,19 @@ namespace Microsoft.Xna.Framework.Audio
             SoundBuffer.BindDataBuffer(buffer, format, count, sampleRate);
         }
 
+        private void PlatformInitializePcm(IntPtr buffer, int offset, int count, int sampleRate, AudioChannels channels, int loopStart, int loopLength)
+        {
+            var format = channels == AudioChannels.Stereo ? ALFormat.Stereo16 : ALFormat.Mono16;
+            if (count <= StreamedXactThresholdBytes)
+            {
+                SoundBuffer = new OALSoundBuffer();
+                SoundBuffer.BindDataBuffer(IntPtr.Add(buffer, offset), format, count, sampleRate);
+                return;
+            }
+
+            SoundBufferStreamed = new OALSoundBufferStreamed(buffer, format, count, sampleRate, channels, 0);
+        }
+
         private void PlatformInitializeIeeeFloat(byte[] buffer, int offset, int count, int sampleRate, AudioChannels channels, int loopStart, int loopLength)
         {
             if (!OpenALSoundController.Instance.SupportsIeee)
@@ -96,6 +117,88 @@ namespace Microsoft.Xna.Framework.Audio
             // Buffer length must be aligned with the block alignment
             int alignedCount = count - (count % blockAlignment);
             SoundBuffer.BindDataBuffer(buffer, format, alignedCount, sampleRate, sampleAlignment);
+        }
+
+        private void PlatformInitializeAdpcm(IntPtr buffer, int offset, int count, int sampleRate, AudioChannels channels, int blockAlignment, int loopStart, int loopLength)
+        {
+            var format = channels == AudioChannels.Stereo ? ALFormat.StereoMSAdpcm : ALFormat.MonoMSAdpcm;
+            var sampleAlignment = AudioLoader.SampleAlignment(format, blockAlignment);
+            var alignedCount = count - (count % blockAlignment);
+            SoundBufferStreamed = new OALSoundBufferStreamed(buffer, format, alignedCount, sampleRate, channels, sampleAlignment);
+        }
+
+        private static int GetXactAdpcmSampleAlignment(int blockAlignment)
+        {
+            // XACT wave-bank headers store the value used to derive OpenAL's
+            // ADPCM sample alignment, not the byte block size expected by WAV
+            // loader helpers. Treating it as generic WAV alignment corrupts
+            // streamed chunk boundaries.
+            return (blockAlignment + 16) * 2;
+        }
+
+        private static int GetAdpcmByteAlignment(AudioChannels channels, int sampleAlignment)
+        {
+            return (int)channels * (((sampleAlignment - 2) / 2) + 7);
+        }
+
+        private void PlatformInitializeXactAdpcm(byte[] buffer, int count, int sampleRate, AudioChannels channels, int xactBlockAlignment)
+        {
+            var sampleAlignment = GetXactAdpcmSampleAlignment(xactBlockAlignment);
+            var blockAlignment = GetAdpcmByteAlignment(channels, sampleAlignment);
+            Log(
+                "PlatformInitializeXactAdpcm bytes count=" + count
+                + " rate=" + sampleRate
+                + " channels=" + channels
+                + " xactBlockAlignment=" + xactBlockAlignment
+                + " sampleAlignment=" + sampleAlignment
+                + " byteBlockAlignment=" + blockAlignment
+                + " supportsAdpcm=" + OpenALSoundController.Instance.SupportsAdpcm);
+
+            if (!OpenALSoundController.Instance.SupportsAdpcm)
+            {
+                buffer = AudioLoader.ConvertMsAdpcmToPcm(buffer, 0, count, (int)channels, blockAlignment);
+                Log(
+                    "PlatformInitializeXactAdpcm bytes decodedPcm count=" + buffer.Length
+                    + " channels=" + channels);
+                PlatformInitializePcm(buffer, 0, buffer.Length, 16, sampleRate, channels, 0, 0);
+                return;
+            }
+
+            var format = AudioLoader.GetSoundFormat(AudioLoader.FormatMsAdpcm, (int)channels, 0);
+            SoundBuffer = new OALSoundBuffer();
+            SoundBuffer.BindDataBuffer(buffer, format, count, sampleRate, sampleAlignment);
+        }
+
+        private void PlatformInitializeXactAdpcm(IntPtr buffer, int count, int sampleRate, AudioChannels channels, int xactBlockAlignment)
+        {
+            var sampleAlignment = GetXactAdpcmSampleAlignment(xactBlockAlignment);
+            var blockAlignment = GetAdpcmByteAlignment(channels, sampleAlignment);
+            var format = channels == AudioChannels.Stereo ? ALFormat.StereoMSAdpcm : ALFormat.MonoMSAdpcm;
+            Log(
+                "PlatformInitializeXactAdpcm ptr count=" + count
+                + " rate=" + sampleRate
+                + " channels=" + channels
+                + " xactBlockAlignment=" + xactBlockAlignment
+                + " sampleAlignment=" + sampleAlignment
+                + " byteBlockAlignment=" + blockAlignment
+                + " supportsAdpcm=" + OpenALSoundController.Instance.SupportsAdpcm);
+
+            if (!OpenALSoundController.Instance.SupportsAdpcm)
+            {
+                var compressed = new byte[count];
+                System.Runtime.InteropServices.Marshal.Copy(buffer, compressed, 0, count);
+                var pcm = AudioLoader.ConvertMsAdpcmToPcm(compressed, 0, count, (int)channels, blockAlignment);
+                Log(
+                    "PlatformInitializeXactAdpcm ptr decodedPcm count=" + pcm.Length
+                    + " channels=" + channels);
+                PlatformInitializePcm(pcm, 0, pcm.Length, 16, sampleRate, channels, 0, 0);
+                return;
+            }
+
+            // Pointer-backed XACT wave-bank data is streamed even when the cue is
+            // tiny. This keeps large banks memory-resident as pointers without
+            // copying individual waves into standalone OpenAL buffers. Not ideal, but works
+            SoundBufferStreamed = new OALSoundBufferStreamed(buffer, format, count, sampleRate, channels, sampleAlignment);
         }
 
         private void PlatformInitializeIma4(byte[] buffer, int offset, int count, int sampleRate, AudioChannels channels, int blockAlignment, int loopStart, int loopLength)
@@ -159,11 +262,25 @@ namespace Microsoft.Xna.Framework.Audio
         {
             if (codec == MiniFormatTag.Adpcm)
             {
-                PlatformInitializeAdpcm(buffer, 0, buffer.Length, sampleRate, (AudioChannels)channels, (blockAlignment + 16) * channels, loopStart, loopLength);
+                PlatformInitializeXactAdpcm(buffer, buffer.Length, sampleRate, (AudioChannels)channels, blockAlignment);
                 duration = TimeSpan.FromSeconds(SoundBuffer.Duration);
                 return;
             }
 
+            Log("PlatformInitializeXact(byte[]): unsupported codec=" + codec + " channels=" + channels + " sampleRate=" + sampleRate + " blockAlignment=" + blockAlignment + " bufferLength=" + buffer.Length);
+            throw new NotSupportedException("Unsupported sound format!");
+        }
+
+        private void PlatformInitializeXact(MiniFormatTag codec, IntPtr buffer, long length, int channels, int sampleRate, int blockAlignment, int loopStart, int loopLength, out TimeSpan duration)
+        {
+            if (codec == MiniFormatTag.Adpcm)
+            {
+                PlatformInitializeXactAdpcm(buffer, (int)length, sampleRate, (AudioChannels)channels, blockAlignment);
+                duration = TimeSpan.FromSeconds((float)loopLength / sampleRate);
+                return;
+            }
+
+            Log("PlatformInitializeXact(ptr): unsupported codec=" + codec + " channels=" + channels + " sampleRate=" + sampleRate + " blockAlignment=" + blockAlignment + " length=" + length);
             throw new NotSupportedException("Unsupported sound format!");
         }
 
@@ -185,7 +302,7 @@ namespace Microsoft.Xna.Framework.Audio
 
             if (ReverbEffect != 0)
                 return;
-            
+
             var efx = OpenALSoundController.Efx;
             efx.GenAuxiliaryEffectSlots (1, out ReverbSlot);
             efx.GenEffect (out ReverbEffect);
@@ -207,7 +324,7 @@ namespace Microsoft.Xna.Framework.Audio
             efx.AuxiliaryEffectSlot (ReverbSlot, EfxEffectSlotf.EffectSlotGain, reverbSettings.WetDryMixPct / 200f);
 
             // Dont know what to do with these EFX has no mapping for them. Just ignore for now
-            // we can enable them as we go. 
+            // we can enable them as we go. (There may be no equivelant at all)
             //efx.SetEffectParam (ReverbEffect, EfxEffectf.PositionLeft, reverbSettings.PositionLeft);
             //efx.SetEffectParam (ReverbEffect, EfxEffectf.PositionRight, reverbSettings.PositionRight);
             //efx.SetEffectParam (ReverbEffect, EfxEffectf.PositionLeftMatrix, reverbSettings.PositionLeftMatrix);
@@ -231,6 +348,8 @@ namespace Microsoft.Xna.Framework.Audio
                 SoundBuffer.Dispose();
                 SoundBuffer = null;
             }
+
+            SoundBufferStreamed = null;
         }
 
 #endregion
@@ -251,4 +370,3 @@ namespace Microsoft.Xna.Framework.Audio
         }
     }
 }
-

@@ -4,12 +4,19 @@
 
 using System;
 using System.IO;
+using System.IO.MemoryMappedFiles;
 
 namespace Microsoft.Xna.Framework.Audio
 {
     /// <summary>Represents a collection of wave files.</summary>
     public partial class WaveBank : IDisposable
     {
+        [System.Diagnostics.Conditional("DEBUG")]
+        private static void Log(string message)
+        {
+            System.Console.WriteLine("XactTrace: " + message);
+        }
+
         private readonly SoundEffect[] _sounds;
         private readonly StreamInfo[] _streams;
         private readonly string _bankName;
@@ -20,6 +27,10 @@ namespace Microsoft.Xna.Framework.Audio
 
         private readonly int _version;
         private readonly int _playRegionOffset;
+        private MemoryMappedFile _waveBankMap;
+        private MemoryMappedViewAccessor _waveBankView;
+        private IntPtr _waveBankData;
+        private readonly object _loadLock = new object();
 
         struct Segment
         {
@@ -59,7 +70,7 @@ namespace Microsoft.Xna.Framework.Audio
         private const int Flag_SyncDisabled = 0x00040000; // Bank is disabled for audition sync
         private const int Flag_SeekTables = 0x00080000; // Bank includes seek tables.
         private const int Flag_Mask = 0x000F0000;
-        
+
         /// <summary>
         /// </summary>
         public bool IsInUse { get; private set; }
@@ -76,6 +87,7 @@ namespace Microsoft.Xna.Framework.Audio
         {
         }
 
+        // TODO: Clean this mess up when we figure out what parts we don't need
         private WaveBank(AudioEngine audioEngine, string waveBankFilename, bool streaming, int offset, int packetsize)
         {
             if (audioEngine == null)
@@ -83,205 +95,246 @@ namespace Microsoft.Xna.Framework.Audio
             if (string.IsNullOrEmpty(waveBankFilename))
                 throw new ArgumentNullException("nonStreamingWaveBankFilename");
 
-            // Is this a streaming wavebank?
-            if (streaming)
+            _streaming = streaming;
+            _offset = offset;
+            _packetSize = packetsize;
+
+            try
             {
-                if (offset != 0)
-                    throw new ArgumentException("We only support a zero offset in streaming banks.", "offset");
-                if (packetsize < 2)
-                    throw new ArgumentException("The packet size must be greater than 2.", "packetsize");
-
-                _streaming = true;
-                _offset = offset;
-                _packetSize = packetsize;
-            }
-
-            //XWB PARSING
-            //Adapted from MonoXNA
-            //Originally adaped from Luigi Auriemma's unxwb
-            
-            WaveBankHeader wavebankheader;
-            WaveBankData wavebankdata;
-
-            wavebankdata.EntryNameElementSize = 0;
-            wavebankdata.CompactFormat = 0;
-            wavebankdata.Alignment = 0;
-            wavebankdata.BuildTime = 0;
-
-            int wavebank_offset = 0;
-
-            _waveBankFileName = waveBankFilename;
-
-            BinaryReader reader = new BinaryReader(AudioEngine.OpenStream(waveBankFilename));
-
-            reader.ReadBytes(4);
-
-            _version = wavebankheader.Version = reader.ReadInt32();
-
-            int last_segment = 4;
-            //if (wavebankheader.Version == 1) goto WAVEBANKDATA;
-            if (wavebankheader.Version <= 3) last_segment = 3;
-            if (wavebankheader.Version >= 42) reader.ReadInt32();    // skip HeaderVersion
-
-            wavebankheader.Segments = new Segment[5];
-
-            for (int i = 0; i <= last_segment; i++)
-            {
-                wavebankheader.Segments[i].Offset = reader.ReadInt32();
-                wavebankheader.Segments[i].Length = reader.ReadInt32();
-            }
-
-            reader.BaseStream.Seek(wavebankheader.Segments[0].Offset, SeekOrigin.Begin);
-
-            //WAVEBANKDATA:
-
-            wavebankdata.Flags = reader.ReadInt32();
-            wavebankdata.EntryCount = reader.ReadInt32();
-
-            if ((wavebankheader.Version == 2) || (wavebankheader.Version == 3))
-            {
-                wavebankdata.BankName = System.Text.Encoding.UTF8.GetString(reader.ReadBytes(16),0,16).Replace("\0", "");
-            }
-            else
-            {
-                wavebankdata.BankName = System.Text.Encoding.UTF8.GetString(reader.ReadBytes(64),0,64).Replace("\0", "");
-            }
-
-            _bankName = wavebankdata.BankName;
-
-            if (wavebankheader.Version == 1)
-            {
-                //wavebank_offset = (int)ftell(fd) - file_offset;
-                wavebankdata.EntryMetaDataElementSize = 20;
-            }
-            else
-            {
-                wavebankdata.EntryMetaDataElementSize = reader.ReadInt32();
-                wavebankdata.EntryNameElementSize = reader.ReadInt32();
-                wavebankdata.Alignment = reader.ReadInt32();
-                wavebank_offset = wavebankheader.Segments[1].Offset; //METADATASEGMENT
-            }
-
-            if ((wavebankdata.Flags & Flag_Compact) != 0)
-            {
-                reader.ReadInt32(); // compact_format
-            }
-
-            _playRegionOffset = wavebankheader.Segments[last_segment].Offset;
-            if (_playRegionOffset == 0)
-            {
-                _playRegionOffset =
-                    wavebank_offset +
-                    (wavebankdata.EntryCount * wavebankdata.EntryMetaDataElementSize);
-            }
-            
-            int segidx_entry_name = 2;
-            if (wavebankheader.Version >= 42) segidx_entry_name = 3;
-            
-            if ((wavebankheader.Segments[segidx_entry_name].Offset != 0) &&
-                (wavebankheader.Segments[segidx_entry_name].Length != 0))
-            {
-                if (wavebankdata.EntryNameElementSize == -1) wavebankdata.EntryNameElementSize = 0;
-                byte[] entry_name = new byte[wavebankdata.EntryNameElementSize + 1];
-                entry_name[wavebankdata.EntryNameElementSize] = 0;
-            }
-
-            _sounds = new SoundEffect[wavebankdata.EntryCount];
-            _streams = new StreamInfo[wavebankdata.EntryCount];
-
-            reader.BaseStream.Seek(wavebank_offset, SeekOrigin.Begin);
-
-            // The compact format requires us to load stuff differently.
-            var isCompactFormat = (wavebankdata.Flags & Flag_Compact) != 0;
-            if (isCompactFormat)
-            {
-                // Load the sound data offset table from disk.
-                for (var i = 0; i < wavebankdata.EntryCount; i++)
+                // Is this a streaming wavebank?
+                if (streaming)
                 {
-                    var len = reader.ReadInt32();
-                    _streams[i].Format = wavebankdata.CompactFormat;
-                    _streams[i].FileOffset = (len & ((1 << 21) - 1))*wavebankdata.Alignment;
+                    if (offset != 0)
+                        throw new ArgumentException("We only support a zero offset in streaming banks.", "offset");
+                    if (packetsize < 2)
+                        throw new ArgumentException("The packet size must be greater than 2.", "packetsize");
+
+                    // DesktopGL doesn't implement PlatformCreateStream(). Keep
+                    // streamed XACT banks on the same mapped-file path used by
+                    // resident banks, with per-wave streaming handled later.
+                    Log("WaveBank streaming fallback file=" + waveBankFilename + " offset=" + offset + " packetSize=" + packetsize);
+                }
+                else
+                {
+                    Log("WaveBank ctor file=" + waveBankFilename + " streaming=false");
                 }
 
-                // Now figure out the sound data lengths.
-                for (var i = 0; i < wavebankdata.EntryCount; i++)
-                {
-                    int nextOffset;
-                    if (i == (wavebankdata.EntryCount - 1))
-                        nextOffset = wavebankheader.Segments[last_segment].Length;
-                    else
-                        nextOffset = _streams[i + 1].FileOffset;
+                //XWB PARSING
+                //Adapted from MonoXNA
+                //Originally adaped from Luigi Auriemma's unxwb
 
-                    // The next and current offsets used to calculate the length.
-                    _streams[i].FileLength = nextOffset - _streams[i].FileOffset;
-                }
-            }
-            else
-            {
-                for (var i = 0; i < wavebankdata.EntryCount; i++)
+                WaveBankHeader wavebankheader;
+                WaveBankData wavebankdata;
+
+                wavebankdata.EntryNameElementSize = 0;
+                wavebankdata.CompactFormat = 0;
+                wavebankdata.Alignment = 0;
+                wavebankdata.BuildTime = 0;
+
+                int wavebank_offset = 0;
+
+                _waveBankFileName = waveBankFilename;
+
+                var baseStream = AudioEngine.OpenStream(waveBankFilename);
+                Log(
+                    "WaveBank stream opened file=" + waveBankFilename
+                    + " type=" + baseStream.GetType().FullName
+                    + " canSeek=" + baseStream.CanSeek
+                    + " length=" + (baseStream.CanSeek ? baseStream.Length.ToString() : "-1"));
+
+                BinaryReader reader = new BinaryReader(baseStream);
+
+                var signature = reader.ReadBytes(4);
+                Log("WaveBank signature file=" + waveBankFilename + " bytes=" + BitConverter.ToString(signature));
+
+                _version = wavebankheader.Version = reader.ReadInt32();
+                Log("WaveBank version file=" + waveBankFilename + " version=" + _version);
+
+                int last_segment = 4;
+                //if (wavebankheader.Version == 1) goto WAVEBANKDATA;
+                if (wavebankheader.Version <= 3) last_segment = 3;
+                if (wavebankheader.Version >= 42)
                 {
-                    var info = new StreamInfo();
-                    if (wavebankheader.Version == 1)
+                    var headerVersion = reader.ReadInt32();    // skip HeaderVersion
+                    Log("WaveBank headerVersion file=" + waveBankFilename + " headerVersion=" + headerVersion);
+                }
+
+                wavebankheader.Segments = new Segment[5];
+
+                for (int i = 0; i <= last_segment; i++)
+                {
+                    wavebankheader.Segments[i].Offset = reader.ReadInt32();
+                    wavebankheader.Segments[i].Length = reader.ReadInt32();
+                }
+
+                reader.BaseStream.Seek(wavebankheader.Segments[0].Offset, SeekOrigin.Begin);
+
+                //WAVEBANKDATA:
+
+                wavebankdata.Flags = reader.ReadInt32();
+                wavebankdata.EntryCount = reader.ReadInt32();
+
+                if ((wavebankheader.Version == 2) || (wavebankheader.Version == 3))
+                {
+                    wavebankdata.BankName = System.Text.Encoding.UTF8.GetString(reader.ReadBytes(16),0,16).Replace("\0", "");
+                }
+                else
+                {
+                    wavebankdata.BankName = System.Text.Encoding.UTF8.GetString(reader.ReadBytes(64),0,64).Replace("\0", "");
+                }
+
+                _bankName = wavebankdata.BankName;
+
+                if (wavebankheader.Version == 1)
+                {
+                    //wavebank_offset = (int)ftell(fd) - file_offset;
+                    wavebankdata.EntryMetaDataElementSize = 20;
+                }
+                else
+                {
+                    wavebankdata.EntryMetaDataElementSize = reader.ReadInt32();
+                    wavebankdata.EntryNameElementSize = reader.ReadInt32();
+                    wavebankdata.Alignment = reader.ReadInt32();
+                    wavebank_offset = wavebankheader.Segments[1].Offset; //METADATASEGMENT
+                }
+
+                if ((wavebankdata.Flags & Flag_Compact) != 0)
+                {
+                    reader.ReadInt32(); // compact_format
+                }
+
+                _playRegionOffset = wavebankheader.Segments[last_segment].Offset;
+                if (_playRegionOffset == 0)
+                {
+                    _playRegionOffset =
+                        wavebank_offset +
+                        (wavebankdata.EntryCount * wavebankdata.EntryMetaDataElementSize);
+                }
+
+                Log(
+                    "WaveBank metadata"
+                    + " name=" + _bankName
+                    + " version=" + _version
+                    + " entries=" + wavebankdata.EntryCount
+                    + " flags=0x" + wavebankdata.Flags.ToString("X")
+                    + " metaSize=" + wavebankdata.EntryMetaDataElementSize
+                    + " playRegionOffset=" + _playRegionOffset);
+
+                int segidx_entry_name = 2;
+                if (wavebankheader.Version >= 42) segidx_entry_name = 3;
+
+                if ((wavebankheader.Segments[segidx_entry_name].Offset != 0) &&
+                    (wavebankheader.Segments[segidx_entry_name].Length != 0))
+                {
+                    if (wavebankdata.EntryNameElementSize == -1) wavebankdata.EntryNameElementSize = 0;
+                    byte[] entry_name = new byte[wavebankdata.EntryNameElementSize + 1];
+                    entry_name[wavebankdata.EntryNameElementSize] = 0;
+                }
+
+                _sounds = new SoundEffect[wavebankdata.EntryCount];
+                _streams = new StreamInfo[wavebankdata.EntryCount];
+
+                reader.BaseStream.Seek(wavebank_offset, SeekOrigin.Begin);
+
+                // The compact format requires us to load stuff differently.
+                var isCompactFormat = (wavebankdata.Flags & Flag_Compact) != 0;
+                if (isCompactFormat)
+                {
+                    // Load the sound data offset table from disk.
+                    for (var i = 0; i < wavebankdata.EntryCount; i++)
                     {
-                        info.Format = reader.ReadInt32();
-                        info.FileOffset = reader.ReadInt32();
-                        info.FileLength = reader.ReadInt32();
-                        info.LoopStart = reader.ReadInt32();
-                        info.LoopLength = reader.ReadInt32();
+                        var len = reader.ReadInt32();
+                        _streams[i].Format = wavebankdata.CompactFormat;
+                        _streams[i].FileOffset = (len & ((1 << 21) - 1))*wavebankdata.Alignment;
                     }
-                    else
-                    {
-                        var flagsAndDuration = reader.ReadInt32(); // Unused
 
-                        if (wavebankdata.EntryMetaDataElementSize >= 8)
+                    // Now figure out the sound data lengths.
+                    for (var i = 0; i < wavebankdata.EntryCount; i++)
+                    {
+                        int nextOffset;
+                        if (i == (wavebankdata.EntryCount - 1))
+                            nextOffset = wavebankheader.Segments[last_segment].Length;
+                        else
+                            nextOffset = _streams[i + 1].FileOffset;
+
+                        // The next and current offsets used to calculate the length.
+                        _streams[i].FileLength = nextOffset - _streams[i].FileOffset;
+                    }
+                }
+                else
+                {
+                    for (var i = 0; i < wavebankdata.EntryCount; i++)
+                    {
+                        var info = new StreamInfo();
+                        if (wavebankheader.Version == 1)
+                        {
                             info.Format = reader.ReadInt32();
-                        if (wavebankdata.EntryMetaDataElementSize >= 12)
                             info.FileOffset = reader.ReadInt32();
-                        if (wavebankdata.EntryMetaDataElementSize >= 16)
                             info.FileLength = reader.ReadInt32();
-                        if (wavebankdata.EntryMetaDataElementSize >= 20)
                             info.LoopStart = reader.ReadInt32();
-                        if (wavebankdata.EntryMetaDataElementSize >= 24)
                             info.LoopLength = reader.ReadInt32();
-                    }
+                        }
+                        else
+                        {
+                            var flagsAndDuration = reader.ReadInt32(); // Unused
 
-                    // TODO: What is this doing?
-                    if (wavebankdata.EntryMetaDataElementSize < 24)
-                    {
-                        if (info.FileLength != 0)
-                            info.FileLength = wavebankheader.Segments[last_segment].Length;
-                    }
+                            if (wavebankdata.EntryMetaDataElementSize >= 8)
+                                info.Format = reader.ReadInt32();
+                            if (wavebankdata.EntryMetaDataElementSize >= 12)
+                                info.FileOffset = reader.ReadInt32();
+                            if (wavebankdata.EntryMetaDataElementSize >= 16)
+                                info.FileLength = reader.ReadInt32();
+                            if (wavebankdata.EntryMetaDataElementSize >= 20)
+                                info.LoopStart = reader.ReadInt32();
+                            if (wavebankdata.EntryMetaDataElementSize >= 24)
+                                info.LoopLength = reader.ReadInt32();
+                        }
 
-                    _streams[i] = info;
+                        // TODO: What is this doing?
+                        if (wavebankdata.EntryMetaDataElementSize < 24)
+                        {
+                            if (info.FileLength != 0)
+                                info.FileLength = wavebankheader.Segments[last_segment].Length;
+                        }
+
+                        _streams[i] = info;
+                    }
                 }
-            }
 
-            // If this isn't a streaming wavebank then load all the sounds now.
-            if (!_streaming)
-            {
-                for (var i = 0; i < _streams.Length; i++)
+                if (!_streaming)
                 {
-                    var info = _streams[i];
-                    
-                    // Read the data.
-                    reader.BaseStream.Seek(info.FileOffset + _playRegionOffset, SeekOrigin.Begin);
-                    var audiodata = reader.ReadBytes(info.FileLength);
+                    _waveBankMap = MemoryMappedFile.CreateFromFile(_waveBankFileName, FileMode.Open, null, 0, MemoryMappedFileAccess.Read);
+                    _waveBankView = _waveBankMap.CreateViewAccessor(0, 0, MemoryMappedFileAccess.Read);
 
-                    // Decode the format information.
-                    MiniFormatTag codec;
-                    int channels, rate, alignment;
-                    DecodeFormat(info.Format, out codec, out channels, out rate, out alignment);
+                    unsafe
+                    {
+                        byte* pointer = null;
+                        _waveBankView.SafeMemoryMappedViewHandle.AcquirePointer(ref pointer);
+                        _waveBankData = (IntPtr)pointer;
+                    }
 
-                    // Call the special constuctor on SoundEffect to sort it out.
-                    _sounds[i] = new SoundEffect(codec, audiodata, channels, rate, alignment, info.LoopStart, info.LoopLength);                
+                    Log("WaveBank resident mode using mapped lazy track loads file=" + waveBankFilename + " entries=" + _streams.Length);
                 }
 
-                _streams = null;
-            }
-            
-            audioEngine.Wavebanks[_bankName] = this;
+                audioEngine.Wavebanks[_bankName] = this;
+                Log("WaveBank ready name=" + _bankName + " entries=" + _sounds.Length + " streaming=" + _streaming);
 
-            IsPrepared = true;
+                IsPrepared = true;
+            }
+            catch (Exception ex)
+            {
+                try
+                {
+                    Log(
+                        "WaveBank ctor failed file=" + waveBankFilename
+                        + " type=" + ex.GetType().FullName
+                        + " message=" + ex.Message);
+                }
+                catch
+                {
+                }
+                throw;
+            }
         }
 
         private void DecodeFormat(int format, out MiniFormatTag codec, out int channels, out int rate, out int alignment)
@@ -341,7 +394,7 @@ namespace Microsoft.Xna.Framework.Audio
                 rate = (format >> (2 + 3)) & ((1 << 18) - 1);
                 alignment = (format >> (2 + 3 + 18)) & ((1 << 8) - 1);
                 //bits = (info.Format >> (2 + 3 + 18 + 8)) & ((1 << 1) - 1);
-            }            
+            }
         }
 
         /// <param name="audioEngine">Instance of the AudioEngine to associate this wave bank with.</param>
@@ -364,13 +417,62 @@ namespace Microsoft.Xna.Framework.Audio
             {
                 streaming = true;
                 var stream = _streams[trackIndex];
+                Log("WaveBank.GetSoundEffectInstance streamed track=" + trackIndex);
                 return PlatformCreateStream(stream);
             }
             else
             {
-                streaming = false;
+                EnsureResidentSoundLoaded(trackIndex);
                 var sound = _sounds[trackIndex];
+                streaming = sound.SoundBufferStreamed != null;
+                Log("WaveBank.GetSoundEffectInstance resident track=" + trackIndex);
                 return sound.GetPooledInstance(true);
+            }
+        }
+
+        internal SoundEffect GetSoundEffect(int trackIndex)
+        {
+            if (_streaming)
+                throw new NotSupportedException("Cannot return a resident SoundEffect from a streaming wave bank.");
+
+            EnsureResidentSoundLoaded(trackIndex);
+            return _sounds[trackIndex];
+        }
+
+        private void EnsureResidentSoundLoaded(int trackIndex)
+        {
+            if (_sounds[trackIndex] != null)
+                return;
+
+            lock (_loadLock)
+            {
+                if (_sounds[trackIndex] != null)
+                    return;
+
+                var info = _streams[trackIndex];
+
+                MiniFormatTag codec;
+                int channels, rate, alignment;
+                DecodeFormat(info.Format, out codec, out channels, out rate, out alignment);
+
+                Log(
+                    "WaveBank lazy load track="
+                    + trackIndex
+                    + " codec=" + codec
+                    + " channels=" + channels
+                    + " rate=" + rate
+                    + " alignment=" + alignment
+                    + " offset=" + info.FileOffset
+                    + " length=" + info.FileLength
+                    + " loopStart=" + info.LoopStart
+                    + " loopLength=" + info.LoopLength);
+
+                if (_waveBankData == IntPtr.Zero)
+                    throw new InvalidOperationException("Wave bank memory map is not available for resident audio.");
+
+                var absoluteOffset = info.FileOffset + _playRegionOffset;
+                var audioPointer = IntPtr.Add(_waveBankData, absoluteOffset);
+                _sounds[trackIndex] = new SoundEffect(codec, audioPointer, info.FileLength, channels, rate, alignment, info.LoopStart, info.LoopLength);
             }
         }
 
@@ -408,7 +510,26 @@ namespace Microsoft.Xna.Framework.Audio
             if (disposing)
             {
                 foreach (var s in _sounds)
-                    s.Dispose();
+                    if (s != null)
+                        s.Dispose();
+
+                if (_waveBankView != null)
+                {
+                    if (_waveBankData != IntPtr.Zero)
+                    {
+                        _waveBankView.SafeMemoryMappedViewHandle.ReleasePointer();
+                        _waveBankData = IntPtr.Zero;
+                    }
+
+                    _waveBankView.Dispose();
+                    _waveBankView = null;
+                }
+
+                if (_waveBankMap != null)
+                {
+                    _waveBankMap.Dispose();
+                    _waveBankMap = null;
+                }
 
                 IsPrepared = false;
                 IsInUse = false;
@@ -417,4 +538,3 @@ namespace Microsoft.Xna.Framework.Audio
         }
     }
 }
-

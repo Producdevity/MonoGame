@@ -16,8 +16,14 @@ namespace Microsoft.Xna.Framework.Audio
         Shuffle
     };
 
-    class PlayWaveEvent : ClipEvent
-    {
+        class PlayWaveEvent : ClipEvent
+        {
+        [System.Diagnostics.Conditional("DEBUG")]
+        private static void Log(string message)
+        {
+            System.Console.WriteLine("XactTrace: " + message);
+        }
+
         private readonly SoundBank _soundBank;
 
         private readonly VariationType _variation;
@@ -88,10 +94,9 @@ namespace Microsoft.Xna.Framework.Audio
             {
                 if (_wav.State != SoundState.Stopped)
                     _wav.Stop();
-                if (_streaming)
-                    _wav.Dispose();
-				else					
-					_wav._isXAct = false;					
+                // These XACT instances are pooled. Release them back to the pool
+                // by clearing the XACT ownership flag instead of disposing them.
+                _wav._isXAct = false;
                 _wav = null;
             }
 
@@ -196,6 +201,19 @@ namespace Microsoft.Xna.Framework.Audio
 
             // Update all the wave states then play.
             UpdateState();
+            Log(
+                "PlayWaveEvent.Play track=" + _tracks[_wavIndex]
+                + " waveBank=" + _waveBanks[_wavIndex]
+                + " streaming=" + _streaming
+                + " loopCount=" + _loopCount
+                + " looped=" + _wav.IsLooped
+                + " volume=" + (_trackVolume * _clipVolume)
+                + " pitch=" + (_trackPitch + _clipPitch)
+                + " filterEnabled=" + _clip.FilterEnabled
+                + " filterMode=" + _clip.FilterMode
+                + " filterFrequency=" + _trackFilterFrequency
+                + " filterQ=" + _trackFilterQFactor
+                + " reverb=" + _clipReverbMix);
             _wav.Play();
         }
 
@@ -204,10 +222,7 @@ namespace Microsoft.Xna.Framework.Audio
             if (_wav != null)
             {
                 _wav.Stop();
-                if (_streaming)
-                    _wav.Dispose();
-				else
-                	_wav._isXAct = false;				
+                _wav._isXAct = false;
                 _wav = null;
             }
             _loopIndex = 0;
@@ -278,10 +293,7 @@ namespace Microsoft.Xna.Framework.Audio
                 // limit then we can stop.
                 if (_loopCount == 0 || _loopIndex >= _loopCount)
                 {
-                    if (_streaming)
-                        _wav.Dispose();
-					else
-	                    _wav._isXAct = false;						
+                    _wav._isXAct = false;
                     _wav = null;
                     _loopIndex = 0;
                 }
@@ -300,4 +312,3 @@ namespace Microsoft.Xna.Framework.Audio
         }
     }
 }
-

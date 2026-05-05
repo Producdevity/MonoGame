@@ -3,17 +3,24 @@
 // file 'LICENSE.txt', which is part of this source code package.
 
 using System;
+using System.Collections.Generic;
 using System.IO;
 
 namespace Microsoft.Xna.Framework.Audio
 {
-    class XactSound
+    public class XactSound
     {
+        [System.Diagnostics.Conditional("DEBUG")]
+        private static void Log(string message)
+        {
+            System.Console.WriteLine("XactTrace: " + message);
+        }
+
         private readonly bool _complexSound;
         private readonly XactClip[] _soundClips;
         private readonly int _waveBankIndex;
         private readonly int _trackIndex;
-        private readonly float _volume;
+        private readonly float _volume = 1.0f;
         private readonly float _pitch;
         private readonly uint _categoryID;
         private readonly SoundBank _soundBank;
@@ -21,6 +28,9 @@ namespace Microsoft.Xna.Framework.Audio
 
         private SoundEffectInstance _wave;
         private bool _streaming;
+        private readonly SoundEffect[] _soundEffects;
+        private readonly bool _loop;
+        private bool _registeredWithCategory;
 
         private float _cueVolume = 1;
         private float _cuePitch = 0;
@@ -37,6 +47,19 @@ namespace Microsoft.Xna.Framework.Audio
             _soundBank = soundBank;
             _waveBankIndex = waveBankIndex;
             _trackIndex = trackIndex;
+            RpcCurves = new int[0];
+        }
+
+        public XactSound(SoundEffect[] soundEffects, int categoryId, bool loop, bool useReverb)
+        {
+            if (soundEffects == null || soundEffects.Length == 0)
+                throw new ArgumentException("At least one sound effect is required.", "soundEffects");
+
+            _complexSound = false;
+            _soundEffects = soundEffects;
+            _categoryID = (uint)categoryId;
+            _loop = loop;
+            _useReverb = useReverb;
             RpcCurves = new int[0];
         }
 
@@ -103,7 +126,18 @@ namespace Microsoft.Xna.Framework.Audio
 
             var category = engine.Categories[_categoryID];
             category.AddSound(this);
+            _registeredWithCategory = true;
         }
+
+        internal bool ComplexSound { get { return _complexSound; } }
+        internal XactClip[] SoundClips { get { return _soundClips; } }
+        internal int WaveBankIndex { get { return _waveBankIndex; } }
+        internal int TrackIndex { get { return _trackIndex; } }
+        internal float VolumeScale { get { return _volume; } }
+        internal float PitchScale { get { return _pitch; } }
+        internal uint CategoryId { get { return _categoryID; } }
+        internal SoundBank SoundBank { get { return _soundBank; } }
+        internal bool UseReverb { get { return _useReverb; } }
 
         internal void SetFade(float fadeInTime, float fadeOutTime)
         {
@@ -124,8 +158,15 @@ namespace Microsoft.Xna.Framework.Audio
 
         public void Play(float volume, AudioEngine engine)
         {
+            EnsureRegisteredWithCategory(engine);
+
             _cueVolume = volume;
             var category = engine.Categories[_categoryID];
+            Log(
+                "XactSound.Play category=" + _categoryID
+                + " complex=" + _complexSound
+                + " waveBankIndex=" + _waveBankIndex
+                + " trackIndex=" + _trackIndex);
 
             var curInstances = category.GetPlayingInstanceCount();
             if (curInstances >= category.maxInstances)
@@ -144,7 +185,27 @@ namespace Microsoft.Xna.Framework.Audio
             float finalPitch = _pitch + _cuePitch;
             float finalMix = _useReverb ? _cueReverbMix : 0.0f;
 
-            if (_complexSound) 
+            if (_soundEffects != null)
+            {
+                ReleaseWave(true);
+
+                var index = XactHelpers.Random.Next(_soundEffects.Length);
+                var soundEffect = _soundEffects[index];
+                if (soundEffect == null)
+                    return;
+
+                _wave = soundEffect.GetPooledInstance(true);
+                if (_wave == null)
+                    return;
+
+                _wave._isXAct = true;
+                _wave.IsLooped = _loop;
+                _wave.Pitch = finalPitch;
+                _wave.Volume = finalVolume;
+                _wave.PlatformSetReverbMix(finalMix);
+                _wave.Play();
+            }
+            else if (_complexSound) 
             {
                 foreach (XactClip clip in _soundClips)
                 {
@@ -154,16 +215,10 @@ namespace Microsoft.Xna.Framework.Audio
             } 
             else 
             {
-                if (_wave != null)
-                {
-                    if (_streaming)
-                        _wave.Dispose();
-					else
-						_wave._isXAct = false;					
-                    _wave = null;
-                }
+                ReleaseWave(false);
 
-                    _wave = _soundBank.GetSoundEffectInstance(_waveBankIndex, _trackIndex, out _streaming);
+                _wave = _soundBank.GetSoundEffectInstance(_waveBankIndex, _trackIndex, out _streaming);
+                Log("XactSound.Play instance streaming=" + _streaming + " waveNull=" + (_wave == null));
 
                 if (_wave == null)
                 {
@@ -179,6 +234,44 @@ namespace Microsoft.Xna.Framework.Audio
             }
         }
 
+        private void ReleaseWave(bool stop)
+        {
+            if (_wave == null)
+                return;
+
+            var wave = _wave;
+            if (stop)
+                wave.Stop(true);
+
+            wave._isXAct = false;
+            _wave = null;
+
+            if (!wave._isPooled)
+                wave.Dispose();
+        }
+
+        private void EnsureRegisteredWithCategory(AudioEngine engine)
+        {
+            if (_registeredWithCategory)
+                return;
+
+            var category = engine.Categories[_categoryID];
+            category.AddSound(this);
+            _registeredWithCategory = true;
+        }
+
+        internal IEnumerable<SoundEffect> GetReferencedSoundEffects()
+        {
+            if (_soundEffects == null)
+                yield break;
+
+            for (var i = 0; i < _soundEffects.Length; i++)
+            {
+                if (_soundEffects[i] != null)
+                    yield return _soundEffects[i];
+            }
+        }
+
         internal void Update(float dt)
         {
             if (_complexSound)
@@ -189,13 +282,7 @@ namespace Microsoft.Xna.Framework.Audio
             else
             {
                 if (_wave != null && _wave.State == SoundState.Stopped)
-                {
-                    if (_streaming)
-                        _wave.Dispose();
-					else
-						_wave._isXAct = false;					
-                    _wave = null;
-                }
+                    ReleaseWave(false);
             }
         }
 
@@ -208,15 +295,7 @@ namespace Microsoft.Xna.Framework.Audio
             }
             else
             {
-                if (_wave != null)
-                {
-                    _wave.Stop();
-                    if (_streaming)
-                        _wave.Dispose();
- 					else
-						_wave._isXAct = false;					
-                   _wave = null;
-                }
+                ReleaseWave(true);
             }
         }
         
@@ -229,15 +308,7 @@ namespace Microsoft.Xna.Framework.Audio
             }
             else
             {
-                if (_wave != null)
-                {
-                    _wave.Stop();
-                    if (_streaming)
-                        _wave.Dispose();
-					else
-						_wave._isXAct = false;					
-                    _wave = null;
-                }
+                ReleaseWave(true);
             }
         }
         
@@ -389,4 +460,3 @@ namespace Microsoft.Xna.Framework.Audio
         }
     }
 }
-

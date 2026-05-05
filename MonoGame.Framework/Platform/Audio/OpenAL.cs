@@ -245,6 +245,11 @@ namespace MonoGame.OpenAL
             handle.Free();
         }
 
+        internal static void BufferData(int bid, ALFormat format, IntPtr data, int size, int freq)
+        {
+            alBufferData((uint)bid, (int)format, data, size, freq);
+        }
+
         [CLSCompliant(false)]
         [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
         internal unsafe delegate void d_aldeletebuffers(int n, int* buffers);

@@ -121,6 +121,7 @@ namespace Microsoft.Xna.Framework.Audio
             for (var x = 0; x < _playingInstances.Count;)
             {
                 inst = _playingInstances[x];
+                inst.PushIfNeeded();
 
                 // Don't consume XACT instances... XACT will
                 // clear this flag when it is done with the wave.

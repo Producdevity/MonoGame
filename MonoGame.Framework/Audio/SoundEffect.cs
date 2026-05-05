@@ -3,7 +3,9 @@
 // file 'LICENSE.txt', which is part of this source code package.
 ﻿
 using System;
+using System.Collections.Generic;
 using System.IO;
+using NVorbis;
 
 namespace Microsoft.Xna.Framework.Audio
 {
@@ -13,21 +15,35 @@ namespace Microsoft.Xna.Framework.Audio
     /// <para>The only limit on the number of loaded SoundEffects is restricted by available memory. When a SoundEffect is disposed, all SoundEffectInstances created from it will become invalid.</para>
     /// <para>SoundEffect.Play() can be used for 'fire and forget' sounds. If advanced playback controls like volume or pitch is required, use SoundEffect.CreateInstance().</para>
     /// </remarks>
-    public sealed partial class SoundEffect : IDisposable
+    public partial class SoundEffect : IDisposable
     {
         #region Internal Audio Data
 
         private string _name = string.Empty;
         
         private bool _isDisposed = false;
-        private readonly TimeSpan _duration;
+        protected TimeSpan _duration;
+        private int _dependencies;
+        protected bool _waveBankSound;
+
+        public static HashSet<SoundEffect> EffectsToRemove = new HashSet<SoundEffect>();
 
         #endregion
 
         #region Internal Constructors
 
+        internal SoundEffect()
+        {
+        }
+
         // Only used from SoundEffect.FromStream.
         private SoundEffect(Stream stream)
+            : this(stream, false)
+        {
+        }
+
+        // Only used from SoundEffect.FromStream.
+        internal SoundEffect(Stream stream, bool vorbis)
         {
             Initialize();
             if (_systemState != SoundSystemState.Initialized)
@@ -42,7 +58,44 @@ namespace Microsoft.Xna.Framework.Audio
               Sample rate must be between 8,000 Hz and 48,000 Hz
             */
 
-            PlatformLoadAudioStream(stream, out _duration);
+            if (vorbis)
+                PlatformLoadVorbisStream(stream, out _duration);
+            else
+                PlatformLoadAudioStream(stream, out _duration);
+        }
+
+        private void PlatformLoadVorbisStream(Stream stream, out TimeSpan duration)
+        {
+            using (var reader = new VorbisReader(stream, false))
+            {
+                if (reader.Channels != 1 && reader.Channels != 2)
+                    throw new NotSupportedException("Only mono and stereo Vorbis streams are supported.");
+
+                duration = reader.TotalTime;
+
+                var samples = new float[4096];
+                using (var pcm = new MemoryStream())
+                {
+                    int read;
+                    while ((read = reader.ReadSamples(samples, 0, samples.Length)) > 0)
+                    {
+                        for (var i = 0; i < read; i++)
+                        {
+                            var sample = (int)(samples[i] * 32767f);
+                            if (sample > short.MaxValue)
+                                sample = short.MaxValue;
+                            else if (sample < short.MinValue)
+                                sample = short.MinValue;
+
+                            pcm.WriteByte((byte)(sample & 0xff));
+                            pcm.WriteByte((byte)((sample >> 8) & 0xff));
+                        }
+                    }
+
+                    var buffer = pcm.ToArray();
+                    PlatformInitializePcm(buffer, 0, buffer.Length, 16, reader.SampleRate, (AudioChannels)reader.Channels, 0, 0);
+                }
+            }
         }
 
         // Only used from SoundEffectReader.
@@ -76,6 +129,8 @@ namespace Microsoft.Xna.Framework.Audio
             if (_systemState != SoundSystemState.Initialized)
                 throw new NoAudioHardwareException("Audio has failed to initialize. Call SoundEffect.Initialize() before sound operation to get more specific errors.");
 
+            _waveBankSound = true;
+
             // Handle the common case... the rest is platform specific.
             if (codec == MiniFormatTag.Pcm)
             {
@@ -85,6 +140,25 @@ namespace Microsoft.Xna.Framework.Audio
             }
 
             PlatformInitializeXact(codec, buffer, channels, sampleRate, blockAlignment, loopStart, loopLength, out _duration);
+        }
+
+        // Only used from XACT WaveBank.
+        internal SoundEffect(MiniFormatTag codec, IntPtr buffer, long length, int channels, int sampleRate, int blockAlignment, int loopStart, int loopLength)
+        {
+            Initialize();
+            if (_systemState != SoundSystemState.Initialized)
+                throw new NoAudioHardwareException("Audio has failed to initialize. Call SoundEffect.Initialize() before sound operation to get more specific errors.");
+
+            _waveBankSound = true;
+
+            if (codec == MiniFormatTag.Pcm)
+            {
+                _duration = TimeSpan.FromSeconds((float)length / (sampleRate * blockAlignment));
+                PlatformInitializePcm(buffer, 0, (int)length, sampleRate, (AudioChannels)channels, loopStart, loopLength);
+                return;
+            }
+
+            PlatformInitializeXact(codec, buffer, length, channels, sampleRate, blockAlignment, loopStart, loopLength, out _duration);
         }
 
         #endregion
@@ -282,6 +356,14 @@ namespace Microsoft.Xna.Framework.Audio
             return new SoundEffect(stream);
         }
 
+        public static SoundEffect FromStream(Stream stream, bool vorbis)
+        {
+            if (stream == null)
+                throw new ArgumentNullException("stream");
+
+            return new SoundEffect(stream, vorbis);
+        }
+
         /// <summary>
         /// Returns the duration for 16-bit PCM audio.
         /// </summary>
@@ -389,16 +471,42 @@ namespace Microsoft.Xna.Framework.Audio
         /// <summary>
         /// Returns a sound effect instance from the pool or null if none are available.
         /// </summary>
-        internal SoundEffectInstance GetPooledInstance(bool forXAct)
+        public virtual SoundEffectInstance GetPooledInstance(bool forXAct)
         {
-            if (!SoundEffectInstancePool.SoundsAvailable)
-                return null;
+            lock (FrameworkDispatcher.UpdateSyncRoot)
+            {
+                if (!SoundEffectInstancePool.SoundsAvailable)
+                    return null;
 
-            var inst = SoundEffectInstancePool.GetInstance(forXAct);
-            inst._effect = this;
-            PlatformSetupInstance(inst);
+                var inst = SoundEffectInstancePool.GetInstance(forXAct);
+                inst._effect = this;
+                PlatformSetupInstance(inst);
 
-            return inst;
+                return inst;
+            }
+        }
+
+        public void AddDependency()
+        {
+            if (_isDisposed)
+                throw new ObjectDisposedException("SoundEffect");
+
+            _dependencies++;
+            EffectsToRemove.Remove(this);
+        }
+
+        public void RemoveDependency()
+        {
+            if (_dependencies > 0)
+                _dependencies--;
+
+            if (ShouldBeRemoved())
+                EffectsToRemove.Add(this);
+        }
+
+        public bool ShouldBeRemoved()
+        {
+            return !_waveBankSound && _dependencies <= 0;
         }
 
         #endregion
@@ -530,11 +638,14 @@ namespace Microsoft.Xna.Framework.Audio
         /// not at that time.  Unmanaged resources should always be released.</remarks>
         void Dispose(bool disposing)
         {
-            if (!_isDisposed)
+            lock (FrameworkDispatcher.UpdateSyncRoot)
             {
-                SoundEffectInstancePool.StopPooledInstances(this);
-                PlatformDispose(disposing);
-                _isDisposed = true;
+                if (!_isDisposed)
+                {
+                    SoundEffectInstancePool.StopPooledInstances(this);
+                    PlatformDispose(disposing);
+                    _isDisposed = true;
+                }
             }
         }
 

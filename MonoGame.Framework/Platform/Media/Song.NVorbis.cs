@@ -15,15 +15,25 @@ namespace Microsoft.Xna.Framework.Media
         private float _volume = 1f;
         private readonly object _sourceMutex = new object();
 
+        [System.Diagnostics.Conditional("DEBUG")]
+        private static void Log(string message)
+        {
+            System.Console.WriteLine("SongTrace: " + message);
+        }
+
         private void PlatformInitialize(string fileName)
         {
+            Log("PlatformInitialize: file=" + fileName);
             // init OpenAL if need be
             OpenALSoundController.EnsureInitialized();
+            Log("PlatformInitialize: OpenAL initialized");
 
             stream = new OggStream(fileName, OnFinishedPlaying);
             stream.Prepare();
+            Log("PlatformInitialize: stream prepared");
 
             _duration = stream.GetLength();
+            Log("PlatformInitialize: duration=" + _duration);
         }
         
         internal void SetEventHandler(FinishedPlayingHandler handler) { }
@@ -50,11 +60,13 @@ namespace Microsoft.Xna.Framework.Media
             if (stream == null)
                 return;
 
+            Log("Play: startPosition=" + (startPosition.HasValue ? startPosition.Value.ToString() : "<null>"));
             stream.Play();
             if (startPosition != null)
                 stream.SeekToPosition((TimeSpan)startPosition);
 
             _playCount++;
+            Log("Play: playCount=" + _playCount);
         }
 
         internal void Resume()
@@ -62,6 +74,7 @@ namespace Microsoft.Xna.Framework.Media
             if (stream == null)
                 return;
 
+            Log("Resume");
             stream.Resume();
         }
 
@@ -70,6 +83,7 @@ namespace Microsoft.Xna.Framework.Media
             if (stream == null)
                 return;
 
+            Log("Pause");
             stream.Pause();
         }
 
@@ -78,6 +92,7 @@ namespace Microsoft.Xna.Framework.Media
             if (stream == null)
                 return;
 
+            Log("Stop");
             stream.Stop();
             _playCount = 0;
         }
@@ -159,4 +174,3 @@ namespace Microsoft.Xna.Framework.Media
         }
     }
 }
-

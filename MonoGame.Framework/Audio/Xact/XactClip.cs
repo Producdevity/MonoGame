@@ -7,7 +7,7 @@ using System.IO;
 
 namespace Microsoft.Xna.Framework.Audio
 {
-    class XactClip
+    public class XactClip
     {
         private readonly float _defaultVolume;
         private float _volumeScale;
@@ -492,4 +492,3 @@ namespace Microsoft.Xna.Framework.Audio
         }
     }
 }
-

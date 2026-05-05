@@ -9,6 +9,12 @@ namespace Microsoft.Xna.Framework.Audio
 {
     public partial class SoundEffectInstance : IDisposable
     {
+        [System.Diagnostics.Conditional("DEBUG")]
+        private static void Log(string message)
+        {
+            System.Console.WriteLine("AudioTrace: " + message);
+        }
+
 		internal SoundState SoundState = SoundState.Stopped;
 		private bool _looped = false;
 		private float _alVolume = 1f;
@@ -20,6 +26,8 @@ namespace Microsoft.Xna.Framework.Audio
         float filterQ;
         float frequency;
         int pauseCount;
+        int[] buffers;
+        long currentBufferPosition;
 
         internal readonly object sourceMutex = new object();
         
@@ -104,12 +112,33 @@ namespace Microsoft.Xna.Framework.Audio
 
         private void PlatformPlay()
         {
+            if (_effect.SoundBufferStreamed != null)
+            {
+                PlayStreamed();
+                return;
+            }
+
+            PlayMemoryResident();
+        }
+
+        private void PlayMemoryResident()
+        {
+            Log("SoundEffectInstance.PlayMemoryResident start");
             SourceId = 0;
             HasSourceId = false;
             SourceId = controller.ReserveSource();
             HasSourceId = true;
 
             int bufferId = _effect.SoundBuffer.OpenALDataBuffer;
+            Log(
+                "SoundEffectInstance.PlayMemoryResident buffer=" + bufferId
+                + " format=" + _effect.SoundBuffer.Format
+                + " size=" + _effect.SoundBuffer.DataSize
+                + " rate=" + _effect.SoundBuffer.SampleRate
+                + " looped=" + IsLooped
+                + " volume=" + _alVolume
+                + " pitch=" + _pitch
+                + " pan=" + _pan);
             AL.Source(SourceId, ALSourcei.Buffer, bufferId);
             ALHelper.CheckError("Failed to bind buffer to source.");
 
@@ -143,7 +172,59 @@ namespace Microsoft.Xna.Framework.Audio
 
             AL.SourcePlay(SourceId);
             ALHelper.CheckError("Failed to play source.");
+            Log("SoundEffectInstance.PlayMemoryResident playing source=" + SourceId);
 
+            SoundState = SoundState.Playing;
+        }
+
+        private const int MaxStreamBuffers = 5;
+        private const int StreamBufferFillSize = 131072;
+
+        private void PlayStreamed()
+        {
+            Log("SoundEffectInstance.PlayStreamed start");
+            currentBufferPosition = 0;
+            buffers = AL.GenBuffers(MaxStreamBuffers);
+            ALHelper.CheckError("Failed to generate stream buffers.");
+
+            SourceId = 0;
+            HasSourceId = false;
+            SourceId = controller.ReserveSource();
+            HasSourceId = true;
+            ALHelper.CheckError("Failed to reserve source.");
+
+            AL.Source(SourceId, ALSourcei.Buffer, 0);
+            ALHelper.CheckError("Failed to clear source buffer.");
+
+            for (var i = 0; i < buffers.Length; i++)
+            {
+                if (_effect.SoundBufferStreamed.Alignment > 0)
+                {
+                    AL.Bufferi(buffers[i], ALBufferi.UnpackBlockAlignmentSoft, _effect.SoundBufferStreamed.Alignment);
+                    ALHelper.CheckError("Failed to set buffer alignment.");
+                }
+            }
+
+            AL.Source(SourceId, ALSourcei.SourceRelative, 1);
+            ALHelper.CheckError("Failed set source relative.");
+            AL.DistanceModel(ALDistanceModel.InverseDistanceClamped);
+            ALHelper.CheckError("Failed set source distance.");
+            AL.Source(SourceId, ALSource3f.Position, _pan, 0f, 0f);
+            ALHelper.CheckError("Failed to set source pan.");
+            AL.Source(SourceId, ALSource3f.Velocity, 0f, 0f, 0f);
+            ALHelper.CheckError("Failed to set source pan.");
+            AL.Source(SourceId, ALSourcef.Gain, _alVolume);
+            ALHelper.CheckError("Failed to set source volume.");
+            AL.Source(SourceId, ALSourcef.Pitch, XnaPitchToAlPitch(_pitch));
+            ALHelper.CheckError("Failed to set source pitch.");
+
+            ApplyReverb();
+            ApplyFilter();
+
+            QueueStreamBuffers(buffers);
+            AL.SourcePlay(SourceId);
+            ALHelper.CheckError("Failed to play streamed source.");
+            Log("SoundEffectInstance.PlayStreamed playing source=" + SourceId);
             SoundState = SoundState.Playing;
         }
 
@@ -173,6 +254,84 @@ namespace Microsoft.Xna.Framework.Audio
             SoundState = SoundState.Stopped;
         }
 
+        partial void PlatformPushIfNeeded()
+        {
+            if (State != SoundState.Playing || _effect.SoundBufferStreamed == null || !HasSourceId)
+                return;
+
+            int buffersProcessed;
+            AL.GetSource(SourceId, ALGetSourcei.BuffersProcessed, out buffersProcessed);
+            ALHelper.CheckError("Failed to get processed buffer count.");
+            if (buffersProcessed <= 0)
+                return;
+
+            var processedBuffers = AL.SourceUnqueueBuffers(SourceId, buffersProcessed);
+            ALHelper.CheckError("Failed to unqueue processed buffers.");
+            QueueStreamBuffers(processedBuffers);
+        }
+
+        private void QueueStreamBuffers(int[] bufferSet)
+        {
+            if (_effect.SoundBufferStreamed == null || bufferSet == null || bufferSet.Length == 0)
+                return;
+
+            var stream = _effect.SoundBufferStreamed;
+
+            int buffersQueued;
+            AL.GetSource(SourceId, ALGetSourcei.BuffersQueued, out buffersQueued);
+            ALHelper.CheckError("Failed to get queued buffer count.");
+
+            if (buffersQueued > 2)
+                return;
+
+            if (buffersQueued == 0 && currentBufferPosition == stream.Size && !_looped)
+            {
+                PlatformStop(true);
+                HasSourceId = false;
+                return;
+            }
+
+            var alignment = GetStreamAlignment(stream);
+            for (var i = 0; i < bufferSet.Length; i++)
+            {
+                var size = Math.Min(StreamBufferFillSize, stream.Size - (int)currentBufferPosition);
+                size -= size % alignment;
+
+                if (size <= 0)
+                {
+                    if (!_looped)
+                        break;
+
+                    currentBufferPosition = 0;
+                    size = Math.Min(StreamBufferFillSize, stream.Size);
+                    size -= size % alignment;
+                }
+
+                AL.BufferData(bufferSet[i], stream.Format, IntPtr.Add(stream.DataBuffer, (int)currentBufferPosition), size, stream.SampleRate);
+                ALHelper.CheckError("Failed to fill streamed buffer.");
+                AL.SourceQueueBuffer(SourceId, bufferSet[i]);
+                ALHelper.CheckError("Failed to queue streamed buffer.");
+                currentBufferPosition += size;
+            }
+        }
+
+        private static int GetStreamAlignment(OALSoundBufferStreamed stream)
+        {
+            if (stream.Alignment > 0)
+            {
+                if (stream.Format == ALFormat.MonoMSAdpcm || stream.Format == ALFormat.StereoMSAdpcm)
+                    return (int)stream.Channels * ((stream.Alignment - 2) / 2 + 7);
+
+                var bytesPerSample =
+                    (stream.Format == ALFormat.Mono8 || stream.Format == ALFormat.Stereo8) ? 1 :
+                    (stream.Format == ALFormat.Mono16 || stream.Format == ALFormat.Stereo16) ? 2 :
+                    4;
+                return (int)stream.Channels * bytesPerSample * stream.Alignment;
+            }
+
+            return ALHelper.IsStereoFormat(stream.Format) ? 4 : 2;
+        }
+
         private void FreeSource()
         {
             if (!HasSourceId)
@@ -195,7 +354,20 @@ namespace Microsoft.Xna.Framework.Audio
                         ALHelper.CheckError("Failed to unset filter.");
                     }
 
+                    // Detach any residual buffer bindings before the source is recycled.
+                    AL.Source(SourceId, ALSourcei.Buffer, 0);
+                    ALHelper.CheckError("Failed to clear source buffer.");
+
+                    if (buffers != null && buffers.Length > 0)
+                    {
+                        AL.DeleteBuffers(buffers);
+                        ALHelper.CheckError("Failed to delete stream buffers.");
+                        buffers = null;
+                    }
+
+                    currentBufferPosition = 0;
                     controller.FreeSource(this);
+                    HasSourceId = false;
                 }
             }
         }

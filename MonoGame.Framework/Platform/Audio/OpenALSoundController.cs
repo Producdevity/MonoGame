@@ -103,11 +103,18 @@ namespace Microsoft.Xna.Framework.Audio
         public bool SupportsEfx { get; private set; }
         public bool SupportsIeee { get; private set; }
 
+        [System.Diagnostics.Conditional("DEBUG")]
+        private static void Log(string message)
+        {
+            System.Console.WriteLine("AudioTrace: " + message);
+        }
+
         /// <summary>
         /// Sets up the hardware resources used by the controller.
         /// </summary>
 		private OpenALSoundController()
         {
+            Log("OpenALSoundController ctor start nativeLibrary=" + AL.NativeLibrary);
             if (AL.NativeLibrary == IntPtr.Zero)
                 throw new DllNotFoundException("Couldn't initialize OpenAL because the native binaries couldn't be found.");
 
@@ -131,6 +138,7 @@ namespace Microsoft.Xna.Framework.Audio
             }
             availableSourcesCollection = new List<int>(allSourcesArray);
 			inUseSourcesCollection = new List<int>();
+            Log("OpenALSoundController ctor complete sources=" + allSourcesArray.Length);
 		}
 
         ~OpenALSoundController()
@@ -149,11 +157,14 @@ namespace Microsoft.Xna.Framework.Audio
         {
             try
             {
+                Log("OpenSoundController: Alc.OpenDevice start");
                 _device = Alc.OpenDevice(string.Empty);
+                Log("OpenSoundController: Alc.OpenDevice returned device=" + _device);
                 EffectsExtension.device = _device;
             }
             catch (Exception ex)
             {
+                Log("OpenSoundController: Alc.OpenDevice threw " + ex.GetType().FullName + ": " + ex.Message);
                 throw new NoAudioHardwareException("OpenAL device could not be initialized.", ex);
             }
 
@@ -265,8 +276,11 @@ namespace Microsoft.Xna.Framework.Audio
                 int[] attribute = new int[0];
 #endif
 
+                Log("OpenSoundController: Alc.CreateContext start device=" + _device);
                 _context = Alc.CreateContext(_device, attribute);
+                Log("OpenSoundController: Alc.CreateContext returned context=" + _context);
 #if DESKTOPGL
+                Log("OpenSoundController: creating OggStreamer");
                 _oggstreamer = new OggStreamer();
 #endif
 
@@ -274,15 +288,24 @@ namespace Microsoft.Xna.Framework.Audio
 
                 if (_context != NullContext)
                 {
+                    Log("OpenSoundController: Alc.MakeContextCurrent start");
                     Alc.MakeContextCurrent(_context);
                     AlcHelper.CheckError("Could not make OpenAL context current");
                     SupportsIma4 = AL.IsExtensionPresent("AL_EXT_IMA4");
                     SupportsAdpcm = AL.IsExtensionPresent("AL_SOFT_MSADPCM");
                     SupportsEfx = AL.IsExtensionPresent("AL_EXT_EFX");
                     SupportsIeee = AL.IsExtensionPresent("AL_EXT_float32");
+                    Log(
+                        "OpenSoundController: ready"
+                        + " ima4=" + SupportsIma4
+                        + " adpcm=" + SupportsAdpcm
+                        + " efx=" + SupportsEfx
+                        + " ieee=" + SupportsIeee
+                    );
                     return true;
                 }
             }
+            Log("OpenSoundController: failed to initialize context");
             return false;
         }
 
@@ -292,18 +315,23 @@ namespace Microsoft.Xna.Framework.Audio
             {
                 try
                 {
+                    Log("EnsureInitialized: creating controller");
                     _instance = new OpenALSoundController();
+                    Log("EnsureInitialized: controller ready");
                 }
                 catch (DllNotFoundException)
                 {
+                    Log("EnsureInitialized: DllNotFoundException");
                     throw;
                 }
                 catch (NoAudioHardwareException)
                 {
+                    Log("EnsureInitialized: NoAudioHardwareException");
                     throw;
                 }
                 catch (Exception ex)
                 {
+                    Log("EnsureInitialized: unexpected " + ex.GetType().FullName + ": " + ex.Message);
                     throw (new NoAudioHardwareException("Failed to init OpenALSoundController", ex));
                 }
             }
