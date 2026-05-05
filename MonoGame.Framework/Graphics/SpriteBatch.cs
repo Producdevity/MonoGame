@@ -18,8 +18,8 @@ namespace Microsoft.Xna.Framework.Graphics
 		SpriteSortMode _sortMode;
 		BlendState _blendState;
 		SamplerState _samplerState;
-		DepthStencilState _depthStencilState; 
-		RasterizerState _rasterizerState;		
+		DepthStencilState _depthStencilState;
+		RasterizerState _rasterizerState;
 		Effect _effect;
         bool _beginCalled;
 
@@ -29,15 +29,19 @@ namespace Microsoft.Xna.Framework.Graphics
 		Rectangle _tempRect = new Rectangle (0,0,0,0);
 		Vector2 _texCoordTL = new Vector2 (0,0);
 		Vector2 _texCoordBR = new Vector2 (0,0);
+
+        // Stardew references these SpriteBatch globals directly.
+        public static float TextureTuckAmount;
+        public static Matrix? globalMatrix;
         #endregion
 
         /// <summary>
         /// Constructs a <see cref="SpriteBatch"/>.
         /// </summary>
-        /// <param name="graphicsDevice">The <see cref="GraphicsDevice"/>, which will be used for sprite rendering.</param>        
+        /// <param name="graphicsDevice">The <see cref="GraphicsDevice"/>, which will be used for sprite rendering.</param>
         /// <exception cref="ArgumentNullException">Thrown when <paramref name="graphicsDevice"/> is null.</exception>
         public SpriteBatch(GraphicsDevice graphicsDevice) : this(graphicsDevice, 0)
-        {            
+        {
         }
 
         /// <summary>
@@ -51,7 +55,7 @@ namespace Microsoft.Xna.Framework.Graphics
 			if (graphicsDevice == null)
             {
 				throw new ArgumentNullException ("graphicsDevice", FrameworkResources.ResourceCreationWhenDeviceIsNull);
-			}	
+			}
 
 			this.GraphicsDevice = graphicsDevice;
 
@@ -121,11 +125,32 @@ namespace Microsoft.Xna.Framework.Graphics
 
 			if (_sortMode != SpriteSortMode.Immediate)
 				Setup();
-            
+
             _batcher.DrawBatch(_sortMode, _effect);
         }
-		
-		void Setup() 
+
+        void _TuckTextureCoordinates(Texture2D texture, ref Vector2 tl, ref Vector2 br)
+        {
+            if (TextureTuckAmount <= 0f)
+                return;
+
+            var tuckX = texture.TexelWidth * TextureTuckAmount;
+            var tuckY = texture.TexelHeight * TextureTuckAmount;
+
+            if (Math.Abs(br.X - tl.X) > tuckX * 2f)
+            {
+                tl.X += tuckX;
+                br.X -= tuckX;
+            }
+
+            if (Math.Abs(br.Y - tl.Y) > tuckY * 2f)
+            {
+                tl.Y += tuckY;
+                br.Y -= tuckY;
+            }
+        }
+
+		void Setup()
         {
             var gd = GraphicsDevice;
 			gd.BlendState = _blendState;
@@ -135,7 +160,7 @@ namespace Microsoft.Xna.Framework.Graphics
 
             _spritePass.Apply();
 		}
-		
+
         void CheckValid(Texture2D texture)
         {
             if (texture == null)
@@ -207,9 +232,9 @@ namespace Microsoft.Xna.Framework.Graphics
                     item.SortKey = -layerDepth;
                     break;
             }
-                        
+
             origin = origin * scale;
-            
+
             float w, h;
             if (sourceRectangle.HasValue)
             {
@@ -220,6 +245,7 @@ namespace Microsoft.Xna.Framework.Graphics
                 _texCoordTL.Y = srcRect.Y * texture.TexelHeight;
                 _texCoordBR.X = (srcRect.X + srcRect.Width) * texture.TexelWidth;
                 _texCoordBR.Y = (srcRect.Y + srcRect.Height) * texture.TexelHeight;
+                _TuckTextureCoordinates(texture, ref _texCoordTL, ref _texCoordBR);
             }
             else
             {
@@ -228,7 +254,7 @@ namespace Microsoft.Xna.Framework.Graphics
                 _texCoordTL = Vector2.Zero;
                 _texCoordBR = Vector2.One;
             }
-            
+
             if ((effects & SpriteEffects.FlipVertically) != 0)
             {
                 var temp = _texCoordBR.Y;
@@ -241,7 +267,7 @@ namespace Microsoft.Xna.Framework.Graphics
 				_texCoordBR.X = _texCoordTL.X;
 				_texCoordTL.X = temp;
             }
-            
+
             if (rotation == 0f)
             {
                 item.Set(position.X - origin.X,
@@ -268,7 +294,7 @@ namespace Microsoft.Xna.Framework.Graphics
                         _texCoordBR,
                         layerDepth);
             }
-            
+
             FlushIfNeeded();
 		}
 
@@ -319,7 +345,7 @@ namespace Microsoft.Xna.Framework.Graphics
             float layerDepth)
 		{
             CheckValid(texture);
-            
+
             var item = _batcher.CreateBatchItem();
             item.Texture = texture;
 
@@ -347,13 +373,14 @@ namespace Microsoft.Xna.Framework.Graphics
                 _texCoordTL.Y = srcRect.Y * texture.TexelHeight;
                 _texCoordBR.X = (srcRect.X + srcRect.Width) * texture.TexelWidth;
                 _texCoordBR.Y = (srcRect.Y + srcRect.Height) * texture.TexelHeight;
+                _TuckTextureCoordinates(texture, ref _texCoordTL, ref _texCoordBR);
 
                 if(srcRect.Width != 0)
                     origin.X = origin.X * (float)destinationRectangle.Width / (float)srcRect.Width;
                 else
                     origin.X = origin.X * (float)destinationRectangle.Width * texture.TexelWidth;
                 if(srcRect.Height != 0)
-                    origin.Y = origin.Y * (float)destinationRectangle.Height / (float)srcRect.Height; 
+                    origin.Y = origin.Y * (float)destinationRectangle.Height / (float)srcRect.Height;
                 else
                     origin.Y = origin.Y * (float)destinationRectangle.Height * texture.TexelHeight;
             }
@@ -361,11 +388,11 @@ namespace Microsoft.Xna.Framework.Graphics
             {
                 _texCoordTL = Vector2.Zero;
                 _texCoordBR = Vector2.One;
-                
+
                 origin.X = origin.X * (float)destinationRectangle.Width  * texture.TexelWidth;
                 origin.Y = origin.Y * (float)destinationRectangle.Height * texture.TexelHeight;
             }
-            
+
 			if ((effects & SpriteEffects.FlipVertically) != 0)
             {
                 var temp = _texCoordBR.Y;
@@ -428,10 +455,10 @@ namespace Microsoft.Xna.Framework.Graphics
 		public void Draw (Texture2D texture, Vector2 position, Rectangle? sourceRectangle, Color color)
 		{
 			CheckValid(texture);
-            
+
 			var item = _batcher.CreateBatchItem();
 			item.Texture = texture;
-            
+
             // set SortKey based on SpriteSortMode.
             item.SortKey = _sortMode == SpriteSortMode.Texture ? texture.SortingKey : 0;
 
@@ -445,6 +472,7 @@ namespace Microsoft.Xna.Framework.Graphics
                 _texCoordTL.Y = srcRect.Y * texture.TexelHeight;
                 _texCoordBR.X = (srcRect.X + srcRect.Width)  * texture.TexelWidth;
                 _texCoordBR.Y = (srcRect.Y + srcRect.Height) * texture.TexelHeight;
+                _TuckTextureCoordinates(texture, ref _texCoordTL, ref _texCoordBR);
             }
             else
             {
@@ -475,13 +503,13 @@ namespace Microsoft.Xna.Framework.Graphics
 		public void Draw (Texture2D texture, Rectangle destinationRectangle, Rectangle? sourceRectangle, Color color)
 		{
             CheckValid(texture);
-            
+
 			var item = _batcher.CreateBatchItem();
 			item.Texture = texture;
-            
+
             // set SortKey based on SpriteSortMode.
             item.SortKey = _sortMode == SpriteSortMode.Texture ? texture.SortingKey : 0;
-            
+
             if (sourceRectangle.HasValue)
             {
                 var srcRect = sourceRectangle.GetValueOrDefault();
@@ -489,6 +517,7 @@ namespace Microsoft.Xna.Framework.Graphics
                 _texCoordTL.Y = srcRect.Y * texture.TexelHeight;
                 _texCoordBR.X = (srcRect.X + srcRect.Width) * texture.TexelWidth;
                 _texCoordBR.Y = (srcRect.Y + srcRect.Height) * texture.TexelHeight;
+                _TuckTextureCoordinates(texture, ref _texCoordTL, ref _texCoordBR);
             }
             else
             {
@@ -504,7 +533,7 @@ namespace Microsoft.Xna.Framework.Graphics
                      _texCoordTL,
                      _texCoordBR,
                      0);
-            
+
             FlushIfNeeded();
 		}
 
@@ -517,13 +546,13 @@ namespace Microsoft.Xna.Framework.Graphics
 		public void Draw (Texture2D texture, Vector2 position, Color color)
 		{
 			CheckValid(texture);
-            
+
 			var item = _batcher.CreateBatchItem();
 			item.Texture = texture;
-            
+
             // set SortKey based on SpriteSortMode.
             item.SortKey = _sortMode == SpriteSortMode.Texture ? texture.SortingKey : 0;
-            
+
             item.Set(position.X,
                      position.Y,
                      texture.Width,
@@ -545,13 +574,13 @@ namespace Microsoft.Xna.Framework.Graphics
         public void Draw(Texture2D texture, Rectangle destinationRectangle, Color color)
 		{
             CheckValid(texture);
-            
+
             var item = _batcher.CreateBatchItem();
             item.Texture = texture;
-            
+
             // set SortKey based on SpriteSortMode.
             item.SortKey = _sortMode == SpriteSortMode.Texture ? texture.SortingKey : 0;
-            
+
             item.Set(destinationRectangle.X,
                      destinationRectangle.Y,
                      destinationRectangle.Width,
@@ -560,7 +589,7 @@ namespace Microsoft.Xna.Framework.Graphics
                      Vector2.Zero,
                      Vector2.One,
                      0);
-            
+
             FlushIfNeeded();
 		}
 
@@ -574,7 +603,7 @@ namespace Microsoft.Xna.Framework.Graphics
 		public unsafe void DrawString (SpriteFont spriteFont, string text, Vector2 position, Color color)
 		{
             CheckValid(spriteFont, text);
-            
+
             float sortKey = (_sortMode == SpriteSortMode.Texture) ? spriteFont.Texture.SortingKey : 0;
 
             var offset = Vector2.Zero;
@@ -595,7 +624,7 @@ namespace Microsoft.Xna.Framework.Graphics
                     firstGlyphOfLine = true;
                     continue;
                 }
- 
+
                 var currentGlyphIndex = spriteFont.GetGlyphIndexOrDefault(c);
                 var pCurrentGlyph = pGlyphs + currentGlyphIndex;
 
@@ -612,7 +641,7 @@ namespace Microsoft.Xna.Framework.Graphics
                     offset.X += spriteFont.Spacing + pCurrentGlyph->LeftSideBearing;
                 }
 
-                var p = offset;                
+                var p = offset;
                 p.X += pCurrentGlyph->Cropping.X;
                 p.Y += pCurrentGlyph->Cropping.Y;
                 p += position;
@@ -620,7 +649,7 @@ namespace Microsoft.Xna.Framework.Graphics
                 var item = _batcher.CreateBatchItem();
                 item.Texture = spriteFont.Texture;
                 item.SortKey = sortKey;
-            
+
                 _texCoordTL.X = pCurrentGlyph->BoundsInTexture.X * spriteFont.Texture.TexelWidth;
                 _texCoordTL.Y = pCurrentGlyph->BoundsInTexture.Y * spriteFont.Texture.TexelHeight;
                 _texCoordBR.X = (pCurrentGlyph->BoundsInTexture.X + pCurrentGlyph->BoundsInTexture.Width) * spriteFont.Texture.TexelWidth;
@@ -634,7 +663,7 @@ namespace Microsoft.Xna.Framework.Graphics
                          _texCoordTL,
                          _texCoordBR,
                          0);
-                
+
                 offset.X += pCurrentGlyph->Width + pCurrentGlyph->RightSideBearing;
             }
 
@@ -679,7 +708,7 @@ namespace Microsoft.Xna.Framework.Graphics
             float rotation, Vector2 origin, Vector2 scale, SpriteEffects effects, float layerDepth)
 		{
             CheckValid(spriteFont, text);
-            
+
             float sortKey = 0;
             // set SortKey based on SpriteSortMode.
             switch (_sortMode)
@@ -706,7 +735,7 @@ namespace Microsoft.Xna.Framework.Graphics
             if (flippedVert || flippedHorz)
             {
                 Vector2 size;
-                
+
                 var source = new SpriteFont.CharacterSource(text);
                 spriteFont.MeasureString(ref source, out size);
 
@@ -722,7 +751,7 @@ namespace Microsoft.Xna.Framework.Graphics
                     flipAdjustment.Y = spriteFont.LineSpacing - size.Y;
                 }
             }
-            
+
             Matrix transformation = Matrix.Identity;
             float cos = 0, sin = 0;
             if (rotation == 0)
@@ -741,7 +770,7 @@ namespace Microsoft.Xna.Framework.Graphics
                 transformation.M21 = (flippedVert ? -scale.Y : scale.Y) * (-sin);
                 transformation.M22 = (flippedVert ? -scale.Y : scale.Y) * cos;
                 transformation.M41 = (((flipAdjustment.X - origin.X) * transformation.M11) + (flipAdjustment.Y - origin.Y) * transformation.M21) + position.X;
-                transformation.M42 = (((flipAdjustment.X - origin.X) * transformation.M12) + (flipAdjustment.Y - origin.Y) * transformation.M22) + position.Y; 
+                transformation.M42 = (((flipAdjustment.X - origin.X) * transformation.M12) + (flipAdjustment.Y - origin.Y) * transformation.M22) + position.Y;
             }
 
             var offset = Vector2.Zero;
@@ -791,15 +820,15 @@ namespace Microsoft.Xna.Framework.Graphics
 
                 Vector2.Transform(ref p, ref transformation, out p);
 
-                var item = _batcher.CreateBatchItem();               
+                var item = _batcher.CreateBatchItem();
                 item.Texture = spriteFont.Texture;
                 item.SortKey = sortKey;
-                
+
                 _texCoordTL.X = pCurrentGlyph->BoundsInTexture.X * spriteFont.Texture.TexelWidth;
                 _texCoordTL.Y = pCurrentGlyph->BoundsInTexture.Y * spriteFont.Texture.TexelHeight;
                 _texCoordBR.X = (pCurrentGlyph->BoundsInTexture.X + pCurrentGlyph->BoundsInTexture.Width) * spriteFont.Texture.TexelWidth;
                 _texCoordBR.Y = (pCurrentGlyph->BoundsInTexture.Y + pCurrentGlyph->BoundsInTexture.Height) * spriteFont.Texture.TexelHeight;
-                            
+
                 if ((effects & SpriteEffects.FlipVertically) != 0)
                 {
                     var temp = _texCoordBR.Y;
@@ -839,7 +868,7 @@ namespace Microsoft.Xna.Framework.Graphics
                             _texCoordBR,
                             layerDepth);
                 }
-                
+
                 offset.X += pCurrentGlyph->Width + pCurrentGlyph->RightSideBearing;
             }
 
@@ -857,7 +886,7 @@ namespace Microsoft.Xna.Framework.Graphics
 		public unsafe void DrawString (SpriteFont spriteFont, StringBuilder text, Vector2 position, Color color)
 		{
             CheckValid(spriteFont, text);
-            
+
             float sortKey =  (_sortMode == SpriteSortMode.Texture) ? spriteFont.Texture.SortingKey : 0;
 
             var offset = Vector2.Zero;
@@ -895,15 +924,15 @@ namespace Microsoft.Xna.Framework.Graphics
                     offset.X += spriteFont.Spacing + pCurrentGlyph->LeftSideBearing;
                 }
 
-                var p = offset;                
+                var p = offset;
                 p.X += pCurrentGlyph->Cropping.X;
                 p.Y += pCurrentGlyph->Cropping.Y;
                 p += position;
-                
+
                 var item = _batcher.CreateBatchItem();
                 item.Texture = spriteFont.Texture;
                 item.SortKey = sortKey;
-            
+
                 _texCoordTL.X = pCurrentGlyph->BoundsInTexture.X * spriteFont.Texture.TexelWidth;
                 _texCoordTL.Y = pCurrentGlyph->BoundsInTexture.Y * spriteFont.Texture.TexelHeight;
                 _texCoordBR.X = (pCurrentGlyph->BoundsInTexture.X + pCurrentGlyph->BoundsInTexture.Width) * spriteFont.Texture.TexelWidth;
@@ -962,7 +991,7 @@ namespace Microsoft.Xna.Framework.Graphics
             float rotation, Vector2 origin, Vector2 scale, SpriteEffects effects, float layerDepth)
 		{
             CheckValid(spriteFont, text);
-            
+
             float sortKey = 0;
             // set SortKey based on SpriteSortMode.
             switch (_sortMode)
@@ -1004,7 +1033,7 @@ namespace Microsoft.Xna.Framework.Graphics
                     flipAdjustment.Y = spriteFont.LineSpacing - size.Y;
                 }
             }
-            
+
             Matrix transformation = Matrix.Identity;
             float cos = 0, sin = 0;
             if (rotation == 0)
@@ -1023,7 +1052,7 @@ namespace Microsoft.Xna.Framework.Graphics
                 transformation.M21 = (flippedVert ? -scale.Y : scale.Y) * (-sin);
                 transformation.M22 = (flippedVert ? -scale.Y : scale.Y) * cos;
                 transformation.M41 = (((flipAdjustment.X - origin.X) * transformation.M11) + (flipAdjustment.Y - origin.Y) * transformation.M21) + position.X;
-                transformation.M42 = (((flipAdjustment.X - origin.X) * transformation.M12) + (flipAdjustment.Y - origin.Y) * transformation.M22) + position.Y; 
+                transformation.M42 = (((flipAdjustment.X - origin.X) * transformation.M12) + (flipAdjustment.Y - origin.Y) * transformation.M22) + position.Y;
             }
 
             var offset = Vector2.Zero;
@@ -1072,16 +1101,16 @@ namespace Microsoft.Xna.Framework.Graphics
                 p.Y += pCurrentGlyph->Cropping.Y;
 
                 Vector2.Transform(ref p, ref transformation, out p);
-                
-                var item = _batcher.CreateBatchItem();               
+
+                var item = _batcher.CreateBatchItem();
                 item.Texture = spriteFont.Texture;
                 item.SortKey = sortKey;
-                
+
                 _texCoordTL.X = pCurrentGlyph->BoundsInTexture.X * (float)spriteFont.Texture.TexelWidth;
                 _texCoordTL.Y = pCurrentGlyph->BoundsInTexture.Y * (float)spriteFont.Texture.TexelHeight;
                 _texCoordBR.X = (pCurrentGlyph->BoundsInTexture.X + pCurrentGlyph->BoundsInTexture.Width) * (float)spriteFont.Texture.TexelWidth;
                 _texCoordBR.Y = (pCurrentGlyph->BoundsInTexture.Y + pCurrentGlyph->BoundsInTexture.Height) * (float)spriteFont.Texture.TexelHeight;
-                            
+
                 if ((effects & SpriteEffects.FlipVertically) != 0)
                 {
                     var temp = _texCoordBR.Y;
@@ -1150,4 +1179,3 @@ namespace Microsoft.Xna.Framework.Graphics
         }
 	}
 }
-

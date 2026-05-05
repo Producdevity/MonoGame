@@ -22,8 +22,33 @@ namespace Microsoft.Xna.Framework.Content
 			Texture2D texture = null;
 
             var surfaceFormat = (SurfaceFormat)reader.ReadInt32();
-            int width = reader.ReadInt32();
-            int height = reader.ReadInt32();
+            uint packedWidth = reader.ReadUInt32();
+            uint packedHeight = reader.ReadUInt32();
+            int imageWidth;
+            int imageHeight;
+            int width;
+            int height;
+
+            if ((packedWidth & 0xFFFF0000) == 0)
+            {
+                imageWidth = width = (int)packedWidth;
+            }
+            else
+            {
+                imageWidth = (int)((packedWidth & 0xFFFF0000) >> 16);
+                width = (int)(packedWidth & 0xFFFF);
+            }
+
+            if ((packedHeight & 0xFFFF0000) == 0)
+            {
+                imageHeight = height = (int)packedHeight;
+            }
+            else
+            {
+                imageHeight = (int)((packedHeight & 0xFFFF0000) >> 16);
+                height = (int)(packedHeight & 0xFFFF);
+            }
+
             int levelCount = reader.ReadInt32();
             int levelCountOutput = levelCount;
 
@@ -63,8 +88,10 @@ namespace Microsoft.Xna.Framework.Content
 					convertedFormat = SurfaceFormat.Color;
 					break;
 			}
-			
+
             texture = existingInstance ?? new Texture2D(reader.GetGraphicsDevice(), width, height, levelCountOutput > 1, convertedFormat);
+            if (imageWidth != width || imageHeight != height)
+                texture.SetImageSize(imageWidth, imageHeight);
 #if OPENGL
             Threading.BlockOnUIThread(() =>
             {

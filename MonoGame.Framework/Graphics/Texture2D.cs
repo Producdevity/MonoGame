@@ -22,9 +22,19 @@ namespace Microsoft.Xna.Framework.Graphics
 		internal int width;
 		internal int height;
         internal int ArraySize;
-                
+
         internal float TexelWidth { get; private set; }
         internal float TexelHeight { get; private set; }
+
+        /// <summary>
+        /// Gets the width of the allocated texture data in pixels.
+        /// </summary>
+        public int ActualWidth { get; private set; }
+
+        /// <summary>
+        /// Gets the height of the allocated texture data in pixels.
+        /// </summary>
+        public int ActualHeight { get; private set; }
 
         /// <summary>
         /// Gets the dimensions of the texture
@@ -90,7 +100,7 @@ namespace Microsoft.Xna.Framework.Graphics
             : this(graphicsDevice, width, height, mipmap, format, type, false, 1)
         {
         }
-        
+
         protected Texture2D(GraphicsDevice graphicsDevice, int width, int height, bool mipmap, SurfaceFormat format, SurfaceType type, bool shared, int arraySize)
 		{
             if (graphicsDevice == null)
@@ -103,7 +113,9 @@ namespace Microsoft.Xna.Framework.Graphics
                 throw new ArgumentException("Texture arrays are not supported on this graphics device", "arraySize");
 
             this.GraphicsDevice = graphicsDevice;
+            this.ActualWidth = width;
             this.width = width;
+            this.ActualHeight = height;
             this.height = height;
             this.TexelWidth = 1f / (float)width;
             this.TexelHeight = 1f / (float)height;
@@ -142,6 +154,17 @@ namespace Microsoft.Xna.Framework.Graphics
         }
 
         /// <summary>
+        /// Sets the logical image size while preserving the original backing texture size.
+        /// </summary>
+        public void SetImageSize(int width, int height)
+        {
+            ActualWidth = this.width;
+            ActualHeight = this.height;
+            this.width = width;
+            this.height = height;
+        }
+
+        /// <summary>
         /// Changes the pixels of the texture
         /// Throws ArgumentNullException if data is null
         /// Throws ArgumentException if arraySlice is greater than 0, and the GraphicsDevice does not support texture arrays
@@ -169,7 +192,7 @@ namespace Microsoft.Xna.Framework.Graphics
         /// <param name="data">New data for the texture</param>
         /// <param name="startIndex">Start position of data</param>
         /// <param name="elementCount"></param>
-        public void SetData<T>(int level, Rectangle? rect, T[] data, int startIndex, int elementCount) where T : struct 
+        public void SetData<T>(int level, Rectangle? rect, T[] data, int startIndex, int elementCount) where T : struct
         {
             Rectangle checkedRect;
             ValidateParams(level, 0, rect, data, startIndex, elementCount, out checkedRect);
@@ -268,6 +291,21 @@ namespace Microsoft.Xna.Framework.Graphics
 			this.GetData(0, null, data, 0, data.Length);
 		}
 
+        public void CopyFromTexture(Texture2D other)
+        {
+            var data = new Color[other.width * other.height];
+            other.GetData(data);
+
+            width = other.width;
+            height = other.height;
+            ActualWidth = other.ActualWidth;
+            ActualHeight = other.ActualHeight;
+            TexelWidth = other.TexelWidth;
+            TexelHeight = other.TexelHeight;
+
+            SetData(data);
+        }
+
         /// <summary>
         /// Creates a <see cref="Texture2D"/> from a file, supported formats bmp, gif, jpg, png, tif and dds (only for simple textures).
         /// May work with other formats, but will not work with tga files.
@@ -339,7 +377,7 @@ namespace Microsoft.Xna.Framework.Graphics
             PlatformSaveAsPng(stream, width, height);
         }
 
-        // This method allows games that use Texture2D.FromStream 
+        // This method allows games that use Texture2D.FromStream
         // to reload their textures after the GL context is lost.
         public void Reload(Stream textureStream)
         {
@@ -360,7 +398,7 @@ namespace Microsoft.Xna.Framework.Graphics
         private void ValidateParams<T>(int level, int arraySlice, Rectangle? rect, T[] data,
             int startIndex, int elementCount, out Rectangle checkedRect) where T : struct
         {
-            var textureBounds = new Rectangle(0, 0, Math.Max(width >> level, 1), Math.Max(height >> level, 1));
+            var textureBounds = new Rectangle(0, 0, Math.Max(ActualWidth >> level, 1), Math.Max(ActualHeight >> level, 1));
             checkedRect = rect ?? textureBounds;
             if (level < 0 || level >= LevelCount)
                 throw new ArgumentException("level must be smaller than the number of levels in this texture.", "level");
