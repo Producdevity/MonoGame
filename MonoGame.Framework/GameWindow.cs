@@ -61,6 +61,46 @@ namespace Microsoft.Xna.Framework
 	    /// </summary>
 		public abstract string ScreenDeviceName { get; }
 
+        public Rectangle GetDisplayBounds(int index)
+        {
+#if (WINDOWS && !WINDOWS_UAP) || DESKTOPGL
+            Sdl.Rectangle bounds;
+            Sdl.Display.GetBounds(index, out bounds);
+            return new Rectangle(bounds.X, bounds.Y, bounds.Width, bounds.Height);
+#else
+            return ClientBounds;
+#endif
+        }
+
+        public bool CenterOnDisplay(int index)
+        {
+#if (WINDOWS && !WINDOWS_UAP) || DESKTOPGL
+            try
+            {
+                var bounds = GetDisplayBounds(index);
+                Position = new Point(
+                    bounds.X + (bounds.Width - ClientBounds.Width) / 2,
+                    bounds.Y + (bounds.Height - ClientBounds.Height) / 2);
+                return true;
+            }
+            catch
+            {
+                return false;
+            }
+#else
+            return false;
+#endif
+        }
+
+        public int GetDisplayIndex()
+        {
+#if (WINDOWS && !WINDOWS_UAP) || DESKTOPGL
+            return Sdl.Window.GetDisplayIndex(Handle);
+#else
+            return 0;
+#endif
+        }
+
 		private string _title;
         /// <summary>
         /// Gets or sets the title of the game window.
