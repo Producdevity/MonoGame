@@ -129,8 +129,9 @@ namespace Microsoft.Xna.Framework
                         Mouse.ScrollX += ev.Wheel.X * wheelDelta;
                         break;
                     case Sdl.EventType.MouseMotion:
-                        Window.MouseState.X = ev.Motion.X;
-                        Window.MouseState.Y = ev.Motion.Y;
+                    // TODO: Mouse input is broken, maybe fix it?
+                       // Window.MouseState.X = ev.Motion.X;
+                       // Window.MouseState.Y = ev.Motion.Y;
                         break;
                     case Sdl.EventType.KeyDown:
                     {
