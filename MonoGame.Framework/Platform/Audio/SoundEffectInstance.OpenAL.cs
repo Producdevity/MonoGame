@@ -344,15 +344,8 @@ namespace Microsoft.Xna.Framework.Audio
                     AL.SourceStop(SourceId);
                     ALHelper.CheckError("Failed to stop source.");
 
-                    // Reset the SendFilter to 0 if we are NOT using reverb since
-                    // sources are recycled
-                    if (OpenALSoundController.Instance.SupportsEfx)
-                    {
-                        OpenALSoundController.Efx.BindSourceToAuxiliarySlot(SourceId, 0, 0, 0);
-                        ALHelper.CheckError("Failed to unset reverb.");
-                        AL.Source(SourceId, ALSourcei.EfxDirectFilter, 0);
-                        ALHelper.CheckError("Failed to unset filter.");
-                    }
+                    ClearReverbBinding();
+                    ClearFilterBinding();
 
                     // Detach any residual buffer bindings before the source is recycled.
                     AL.Source(SourceId, ALSourcei.Buffer, 0);
@@ -451,9 +444,30 @@ namespace Microsoft.Xna.Framework.Audio
             reverb = mix;
             if (State == SoundState.Playing)
             {
-                ApplyReverb();
+                if (reverb > 0f)
+                    ApplyReverb();
+                else
+                    ClearReverbBinding();
                 reverb = 0f;
             }
+        }
+
+        private void ClearReverbBinding()
+        {
+            if (!OpenALSoundController.Efx.IsInitialized || !HasSourceId)
+                return;
+
+            OpenALSoundController.Efx.BindSourceToAuxiliarySlot(SourceId, 0, 0, 0);
+            ALHelper.CheckError("Failed to unset reverb.");
+        }
+
+        private void ClearFilterBinding()
+        {
+            if (!OpenALSoundController.Efx.IsInitialized || !HasSourceId)
+                return;
+
+            AL.Source(SourceId, ALSourcei.EfxDirectFilter, 0);
+            ALHelper.CheckError("Failed to unset filter.");
         }
 
         void ApplyReverb()
@@ -529,6 +543,7 @@ namespace Microsoft.Xna.Framework.Audio
                 return;
 
             applyFilter = false;
+            ClearFilterBinding();
         }
 
         private void PlatformDispose(bool disposing)
