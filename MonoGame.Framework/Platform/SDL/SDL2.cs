@@ -140,6 +140,19 @@ internal static class Sdl
         public byte Patch;
     }
 
+    public static bool IsVersionAtLeast(int major, int minor, int patch)
+    {
+        return NormalizeVersion(Major, Minor, Patch) >= NormalizeVersion(major, minor, patch);
+    }
+
+    private static int NormalizeVersion(int major, int minor, int patch)
+    {
+        if (major == 2 && minor == 0 && patch < 23)
+            return major * 1000000 + patch * 1000;
+
+        return major * 1000000 + minor * 1000 + patch;
+    }
+
     [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
     public delegate int d_sdl_init(int flags);
     public static d_sdl_init SDL_Init = FuncLoader.LoadFunction<d_sdl_init>(NativeLibrary, "SDL_Init");
