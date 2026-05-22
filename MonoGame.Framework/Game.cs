@@ -554,6 +554,8 @@ namespace Microsoft.Xna.Framework
             if (_accumulatedElapsedTime > _maxElapsedTime)
                 _accumulatedElapsedTime = _maxElapsedTime;
 
+            var diagnosticsSample = GameLoopDiagnostics.BeginTick();
+
             if (IsFixedTimeStep)
             {
                 _gameTime.ElapsedGameTime = TargetElapsedTime;
@@ -566,7 +568,15 @@ namespace Microsoft.Xna.Framework
                     _accumulatedElapsedTime -= TargetElapsedTime;
                     ++stepCount;
 
-                    DoUpdate(_gameTime);
+                    var updateStartTicks = GameLoopDiagnostics.BeginUpdate(diagnosticsSample);
+                    try
+                    {
+                        DoUpdate(_gameTime);
+                    }
+                    finally
+                    {
+                        GameLoopDiagnostics.EndUpdate(diagnosticsSample, updateStartTicks);
+                    }
                 }
 
                 //Every update after the first accumulates lag
@@ -599,15 +609,34 @@ namespace Microsoft.Xna.Framework
                 _gameTime.TotalGameTime += _accumulatedElapsedTime;
                 _accumulatedElapsedTime = TimeSpan.Zero;
 
-                DoUpdate(_gameTime);
+                var updateStartTicks = GameLoopDiagnostics.BeginUpdate(diagnosticsSample);
+                try
+                {
+                    DoUpdate(_gameTime);
+                }
+                finally
+                {
+                    GameLoopDiagnostics.EndUpdate(diagnosticsSample, updateStartTicks);
+                }
             }
 
             // Draw unless the update suppressed it.
             if (_suppressDraw)
+            {
                 _suppressDraw = false;
+                GameLoopDiagnostics.MarkSuppressedDraw(diagnosticsSample);
+            }
             else
             {
-                DoDraw(_gameTime);
+                var drawStartTicks = GameLoopDiagnostics.BeginDraw(diagnosticsSample);
+                try
+                {
+                    DoDraw(_gameTime, diagnosticsSample);
+                }
+                finally
+                {
+                    GameLoopDiagnostics.EndDraw(diagnosticsSample, drawStartTicks);
+                }
             }
 
             if (_shouldExit)
@@ -615,6 +644,8 @@ namespace Microsoft.Xna.Framework
                 Platform.Exit();
                 _shouldExit = false; //prevents perpetual exiting on platforms supporting resume.
             }
+
+            GameLoopDiagnostics.EndTick(diagnosticsSample, _gameTime.IsRunningSlowly);
         }
 
         #endregion
@@ -820,7 +851,7 @@ namespace Microsoft.Xna.Framework
             }
         }
 
-        internal void DoDraw(GameTime gameTime)
+        internal void DoDraw(GameTime gameTime, GameLoopDiagnostics.TickSample diagnosticsSample = null)
         {
             AssertNotDisposed();
             // Draw and EndDraw should not be called if BeginDraw returns false.
@@ -828,8 +859,25 @@ namespace Microsoft.Xna.Framework
             // http://stackoverflow.com/questions/4235439/xna-3-1-to-4-0-requires-constant-redraw-or-will-display-a-purple-screen
             if (Platform.BeforeDraw(gameTime) && BeginDraw())
             {
-                Draw(gameTime);
-                EndDraw();
+                var drawBodyStartTicks = GameLoopDiagnostics.BeginDrawBody(diagnosticsSample);
+                try
+                {
+                    Draw(gameTime);
+                }
+                finally
+                {
+                    GameLoopDiagnostics.EndDrawBody(diagnosticsSample, drawBodyStartTicks);
+                }
+
+                var endDrawStartTicks = GameLoopDiagnostics.BeginEndDraw(diagnosticsSample);
+                try
+                {
+                    EndDraw();
+                }
+                finally
+                {
+                    GameLoopDiagnostics.EndEndDraw(diagnosticsSample, endDrawStartTicks);
+                }
             }
         }
 
