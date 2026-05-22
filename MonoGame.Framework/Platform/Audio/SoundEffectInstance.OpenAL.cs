@@ -215,6 +215,8 @@ namespace Microsoft.Xna.Framework.Audio
             ALHelper.CheckError("Failed to set source pan.");
             AL.Source(SourceId, ALSourcef.Gain, _alVolume);
             ALHelper.CheckError("Failed to set source volume.");
+            AL.Source(SourceId, ALSourceb.Looping, false);
+            ALHelper.CheckError("Failed to clear source loop state.");
             AL.Source(SourceId, ALSourcef.Pitch, XnaPitchToAlPitch(_pitch));
             ALHelper.CheckError("Failed to set source pitch.");
 
